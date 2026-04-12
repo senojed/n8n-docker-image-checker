@@ -1,0 +1,183 @@
+{
+  "meta": {
+    "variantName": "Codex Variant",
+    "baseUrl": "http://home-dataserver.tail9c609e.ts.net:5678",
+    "mailTo": "honza.reich@gmail.com",
+    "uiPath": "docker-updates-ui-codex-9d2d8c3c4fbb4d4e8fb0",
+    "runPath": "docker-updates-run-codex-1d4b49bb2dcb4388a2b7",
+    "sshScriptPath": "/opt/docker/docker-update-apply.sh",
+    "sshInspectScriptPath": "/opt/docker/docker-image-version-info.py",
+    "sshAllowedServicesPath": "/opt/docker/allowed-services.txt",
+    "aiModel": "gpt-4.1-mini",
+    "tailscaleNote": "Mimo domov funguje odkaz ze zarizeni s aktivnim Tailscale.",
+    "uiTitle": "Docker Updates",
+    "uiSubtitle": "Codex variant - bezpecnejsi update flow pro domaci server"
+  },
+  "services": [
+    {
+      "service": "immich-server",
+      "label": "Immich Server",
+      "image": "ghcr.io/immich-app/immich-server:release",
+      "releaseUrl": "https://github.com/immich-app/immich/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Primarni aplikacni server pro fotky a videa.",
+        "Immich casto meni API i migrace databaze.",
+        "Drz server a machine-learning na stejne verzi."
+      ],
+      "autoInclude": [
+        "immich-machine-learning"
+      ]
+    },
+    {
+      "service": "immich-machine-learning",
+      "label": "Immich ML",
+      "image": "ghcr.io/immich-app/immich-machine-learning:release",
+      "releaseUrl": "https://github.com/immich-app/immich/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": false,
+      "hasDatabase": false,
+      "notes": [
+        "Patri k Immich stacku a mel by bezet na stejne verzi jako server.",
+        "Sam o sobe byva mensi riziko, ale verze musi ladit se serverem."
+      ],
+      "autoInclude": [
+        "immich-server"
+      ]
+    },
+    {
+      "service": "n8n",
+      "label": "n8n",
+      "image": "n8nio/n8n:latest",
+      "releaseUrl": "https://github.com/n8n-io/n8n/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Update muze menit chovani workflowu nebo HTML webhooku.",
+        "Je to orchestrator teto automatizace, takze ma vyssi dopad."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "nextcloud",
+      "label": "Nextcloud",
+      "image": "nextcloud:latest",
+      "releaseUrl": "https://github.com/nextcloud/server/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Velka stateful aplikace s DB a dlouhodobymi migracemi.",
+        "Patch update muze byt v pohode, ale major skok chce kontrolu."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "authelia",
+      "label": "Authelia",
+      "image": "authelia/authelia:latest",
+      "releaseUrl": "https://github.com/authelia/authelia/releases",
+      "riskClass": "high",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Kriticka auth vrstva pred vice sluzbami.",
+        "I mensi zmena muze ovlivnit prihlasovani nebo OIDC flow."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "vaultwarden",
+      "label": "Vaultwarden",
+      "image": "vaultwarden/server:latest",
+      "releaseUrl": "https://github.com/dani-garcia/vaultwarden/releases",
+      "riskClass": "high",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Citliva sluzba na hesla a identity.",
+        "Aktualizace by mela probehnout opatrne a s overenim logu."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "paperless",
+      "label": "Paperless",
+      "image": "ghcr.io/paperless-ngx/paperless-ngx:latest",
+      "releaseUrl": "https://github.com/paperless-ngx/paperless-ngx/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Stateful dokumentovy system s DB a OCR workflow.",
+        "Casto je rozumne mrknout na release notes kvuli migracim."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "calibre-web",
+      "label": "Calibre-Web",
+      "image": "lscr.io/linuxserver/calibre-web:latest",
+      "releaseUrl": "https://github.com/janeczku/calibre-web/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Obvykle mensi riziko nez u auth nebo groupware sluzeb.",
+        "Stejne se hodi po updatu rychle otevrit UI a log."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "komga",
+      "label": "Komga",
+      "image": "gotson/komga:latest",
+      "releaseUrl": "https://github.com/gotson/komga/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Mene kriticka sluzba nez auth nebo cloud storage.",
+        "Po updatu je dobre zkontrolovat OPDS a web UI."
+      ],
+      "autoInclude": []
+    },
+    {
+      "service": "audiobookshelf",
+      "label": "Audiobookshelf",
+      "image": "ghcr.io/advplyr/audiobookshelf:latest",
+      "releaseUrl": "https://github.com/advplyr/audiobookshelf/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Bezny update byva casto bezproblemovy.",
+        "Po updatu se vyplati otevrit web a prehrat kratky test."
+      ],
+      "autoInclude": []
+    }
+  ]
+}
