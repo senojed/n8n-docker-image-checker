@@ -551,6 +551,17 @@ return [{ json: { html } }];
 
 const runValidateCode = `
 ${sharedRuntime}
+const FLOATING_TAGS = new Set(['latest', 'release', 'stable', 'main', 'master', 'nightly', 'edge']);
+
+function imageTag(imageRef) {
+  const value = String(imageRef || '').trim();
+  if (!value || value.includes('@')) return null;
+  const slashIndex = value.lastIndexOf('/');
+  const colonIndex = value.lastIndexOf(':');
+  if (colonIndex <= slashIndex) return null;
+  return value.slice(colonIndex + 1);
+}
+
 const body = $input.first().json.body || {};
 const requested = Array.isArray(body.services) ? body.services : [];
 const dryRun = Boolean(body.dryRun);
@@ -581,6 +592,14 @@ for (const service of requested) {
 }
 
 const labels = expanded.map((service) => SERVICE_MAP_BY_SERVICE[service]?.label || service);
+const floatingServices = expanded
+  .map((service) => SERVICE_MAP_BY_SERVICE[service])
+  .filter((meta) => {
+    const tag = imageTag(meta?.image);
+    return tag && FLOATING_TAGS.has(tag.toLowerCase());
+  })
+  .map((meta) => meta.label || meta.service);
+const floatingTagWarning = floatingServices.length > 0;
 const sshCommand = 'bash ' + META.sshScriptPath + (dryRun ? ' --dry-run ' : ' ') + expanded.join(' ');
 
 return [{
@@ -591,6 +610,8 @@ return [{
     dryRun,
     sshCommand,
     mailTo: META.mailTo,
+    floatingTagWarning,
+    floatingServices,
   },
 }];
 `.trim();
@@ -823,23 +844,78 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function parseStructuredResult(text) {
+  const matches = [...String(text || '').matchAll(/^__RESULT_JSON__:(.*)$/gm)];
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(matches[index][1]);
+    } catch {
+      // Ignore malformed JSON and fall back to the legacy result markers.
+    }
+  }
+  return null;
+}
+
 const requestData = $('Validate Selection').first().json;
 const stdout = $input.first().json.stdout || '';
 const stderr = $input.first().json.stderr || '';
 const combined = [stdout, stderr].filter(Boolean).join('\\n').trim();
-const ok = combined.includes('__RESULT__:OK');
-const dryRun = Boolean(requestData.dryRun) || combined.includes('__RESULT__:OK:DRY_RUN');
+const structuredResult = parseStructuredResult(combined);
+const ok = structuredResult ? structuredResult.status === 'ok' : combined.includes('__RESULT__:OK');
+const dryRun = structuredResult?.phase === 'dry_run' || Boolean(requestData.dryRun) || combined.includes('__RESULT__:OK:DRY_RUN');
+const phase = structuredResult?.phase || (dryRun ? 'dry_run' : ok ? 'complete' : null);
 const errorMatch = combined.match(/__RESULT__:ERROR:(.*)/);
+const summary = structuredResult?.summary || (errorMatch ? errorMatch[1].trim() : '');
+const prevDigests = structuredResult?.prev_digests || {};
+const newDigests = structuredResult?.new_digests || {};
+const floatingTagWarning = Boolean(requestData.floatingTagWarning || structuredResult?.floating_tag_warning);
+const floatingServices = requestData.floatingServices || [];
 const compactOutput = combined.length > 4000 ? combined.slice(0, 4000) + '\\n...[truncated]' : combined;
 const actionLabel = dryRun ? 'Dry-run' : 'Update';
 
 const message = ok
   ? actionLabel + ' dokoncen pro: ' + requestData.labels.join(', ')
-  : actionLabel + ' selhal pro: ' + requestData.labels.join(', ') + (errorMatch ? ' - ' + errorMatch[1].trim() : '');
+  : actionLabel + ' selhal pro: ' + requestData.labels.join(', ') + (summary ? ' - ' + summary : '');
 
-const mailHtml = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto"><h2>' + escapeHtml(ok ? 'Docker ' + actionLabel.toLowerCase() + ' uspel' : 'Docker ' + actionLabel.toLowerCase() + ' selhal') + '</h2><p>' + escapeHtml(message) + '</p><pre style="white-space:pre-wrap;background:#111827;color:#e5e7eb;padding:16px;border-radius:12px">' + escapeHtml(compactOutput || 'Bez vystupu') + '</pre></div>';
+const metadataHtml = [
+  phase ? '<div><strong>Faze:</strong> ' + escapeHtml(phase) + '</div>' : '',
+  summary ? '<div><strong>Shrnuti:</strong> ' + escapeHtml(summary) + '</div>' : '',
+].filter(Boolean).join('');
 
-return [{ json: { ok, dryRun, message, services: requestData.expandedServices, labels: requestData.labels, compactOutput, mailHtml } }];
+const floatingTagHtml = floatingTagWarning
+  ? '<div style="margin:12px 0;padding:12px;background:#422006;color:#fde68a;border-radius:12px"><strong>Floating tag warning:</strong> ' +
+      escapeHtml('Vybrane sluzby bezi na floating tagu, takze diff nemusi odpovidat jen zmene verze.') +
+      (floatingServices.length ? '<div style="margin-top:6px">' + escapeHtml(floatingServices.join(', ')) + '</div>' : '') +
+    '</div>'
+  : '';
+
+const mailHtml = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto"><h2>' +
+  escapeHtml(ok ? 'Docker ' + actionLabel.toLowerCase() + ' uspel' : 'Docker ' + actionLabel.toLowerCase() + ' selhal') +
+  '</h2><p>' + escapeHtml(message) + '</p>' +
+  (metadataHtml ? '<div style="margin:12px 0;color:#334155">' + metadataHtml + '</div>' : '') +
+  floatingTagHtml +
+  '<pre style="white-space:pre-wrap;background:#111827;color:#e5e7eb;padding:16px;border-radius:12px">' +
+    escapeHtml(compactOutput || 'Bez vystupu') +
+  '</pre></div>';
+
+return [{
+  json: {
+    ok,
+    dryRun,
+    phase,
+    summary,
+    message,
+    services: requestData.expandedServices,
+    labels: requestData.labels,
+    floatingTagWarning,
+    floatingServices,
+    prevDigests,
+    newDigests,
+    structuredResult,
+    compactOutput,
+    mailHtml,
+  },
+}];
 `.trim();
 
 function openAiNode(name, id, position) {
@@ -1163,7 +1239,7 @@ const runWorkflow = {
       position: [1120, 220],
       parameters: {
         respondWith: 'json',
-        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
+        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
         options: {},
       },
     },
