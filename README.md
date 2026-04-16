@@ -2,6 +2,8 @@
 
 Tahle slozka obsahuje oddelenou, bezpecnejsi variantu Docker update automatizace pro n8n. Puvodni Claude Code rozpracovani zustava vedle jako reference a neni timhle dotcene.
 
+Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-test.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/README.hardening-test.md:1).
+
 ## Co tato varianta dela
 
 1. Jednou denne v `06:30` pres `SSH` zkontroluje whitelistovane sluzby proti remote image stavu.
@@ -25,12 +27,18 @@ Tahle slozka obsahuje oddelenou, bezpecnejsi variantu Docker update automatizace
 ## Co je v teto slozce
 
 - `plan.md` - lidsky plan a shrnuti.
+- `README.hardening-test.md` - aktualni stav, overeni a otevrene body pro oddelenou hardening test variantu.
 - `service-map.json` - zdroj pravdy pro image -> service mapu a metadata sluzeb.
+- `service-map.hardening-test.json` - overlay config pro oddelenou test variantu vedle live workflowu.
 - `generate-workflows.mjs` - generator workflow JSONu.
 - `workflow-A-checker.json` - n8n workflow pro denni kontrolu a mail.
 - `workflow-B-ui.json` - n8n workflow pro HTML UI.
 - `workflow-C-run.json` - n8n workflow pro spusteni updatu.
+- `workflow-hardening-test-A-checker.json` - manual-only checker pro hardening test.
+- `workflow-hardening-test-B-ui.json` - oddelene UI pro hardening test.
+- `workflow-hardening-test-C-run.json` - oddeleny run webhook pro hardening test.
 - `allowed-services.txt` - allowlist pro host skript.
+- `allowed-services.hardening-test.txt` - stejne data pro test variantu, vygenerovane separatne.
 - `docker-update-apply.sh` - host skript, ktery opravdu spousti update.
 - `docker-image-version-info.py` - host helper pro current/target verzi a digest bez realneho updatu.
 
@@ -47,6 +55,33 @@ Doporuceny SSH target:
 - auth: klic nebo heslo podle toho, co mas v n8n nejpohodlnejsi
 
 Workflowy jsou pripravene tak, aby se do nich pak credential jen prirazil v UI.
+
+## Live vs hardening test
+
+Live homelab workflowy zustavaji:
+
+- `Docker Updates - Checker (Codex)`
+- `Docker Updates - UI (Codex)`
+- `Docker Updates - Run (Codex)`
+
+Vedle nich je pripravena oddelena test varianta:
+
+- `Docker Updates - Checker (Hardening Test)`
+- `Docker Updates - UI (Hardening Test)`
+- `Docker Updates - Run (Hardening Test)`
+
+Oddeleni test varianty:
+
+- UI webhook path: `docker-updates-ui-hardening-test-4f6c9d2a7b1e4c3f8a55`
+- Run webhook path: `docker-updates-run-hardening-test-8c2e7f1a6d4b4f39a2c1`
+- host script path: `/opt/docker/docker-update-apply.phase1.sh`
+- checker je manual-only, bez schedulu
+
+Generovani test artefaktu:
+
+```bash
+node generate-workflows.mjs --config service-map.hardening-test.json
+```
 
 ## SSH credential do n8n
 

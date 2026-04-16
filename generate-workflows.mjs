@@ -4,10 +4,86 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const configPath = path.join(__dirname, 'service-map.json');
-const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
+const defaultConfigPath = path.join(__dirname, 'service-map.json');
+
+function parseCliArgs(argv) {
+  let configPath = defaultConfigPath;
+  let printOnly = null;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
+    if (arg === '--config') {
+      const next = argv[index + 1];
+      if (!next) {
+        throw new Error('Missing value for --config');
+      }
+      configPath = path.resolve(__dirname, next);
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--print-only') {
+      const next = argv[index + 1];
+      if (!next) {
+        throw new Error('Missing value for --print-only');
+      }
+      printOnly = next;
+      index += 1;
+      continue;
+    }
+
+    if (!arg.startsWith('--') && !printOnly) {
+      printOnly = arg;
+      continue;
+    }
+
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  return { configPath, printOnly };
+}
+
+async function loadConfig(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const rawConfig = JSON.parse(await fs.readFile(resolvedPath, 'utf8'));
+
+  if (!rawConfig.extends) {
+    return rawConfig;
+  }
+
+  const baseConfig = await loadConfig(path.resolve(path.dirname(resolvedPath), rawConfig.extends));
+
+  return {
+    ...baseConfig,
+    ...rawConfig,
+    meta: {
+      ...(baseConfig.meta || {}),
+      ...(rawConfig.meta || {}),
+    },
+    services: rawConfig.services || baseConfig.services,
+  };
+}
+
+const cli = parseCliArgs(process.argv.slice(2));
+const configPath = cli.configPath;
+const config = await loadConfig(configPath);
 
 const { meta, services } = config;
+const workflowNames = meta.workflowNames || {
+  checker: 'Docker Updates - Checker (Codex)',
+  ui: 'Docker Updates - UI (Codex)',
+  run: 'Docker Updates - Run (Codex)',
+};
+const artifactNames = meta.artifactNames || {
+  allowedServices: 'allowed-services.txt',
+  checker: 'workflow-A-checker.json',
+  ui: 'workflow-B-ui.json',
+  run: 'workflow-C-run.json',
+};
+const checkerTriggerMode = meta.checkerTriggerMode === 'manual' ? 'manual' : 'schedule';
+const uiHeading = meta.uiHeading || workflowNames.ui;
+const mailHeading = meta.mailHeading || `Docker updates - ${meta.variantName || 'Codex'}`;
 
 const serviceMapByService = Object.fromEntries(services.map((service) => [service.service, service]));
 
@@ -455,7 +531,7 @@ const issueRows = (data.inspectionIssues || []).map((item) =>
 ).join('');
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
-  '<h2 style="margin:0 0 8px;color:#f8fafc">Docker updates - Codex</h2>' +
+  '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
   '<p style="margin:0 0 16px;color:#94a3b8">Nalezeno ' + data.notifyCount + ' polozek. ' + escapeHtml(data.tailscaleNote) + '</p>' +
   (data.versionLookupError ? '<div style="margin:0 0 16px;padding:12px 14px;background:#422006;border:1px solid #92400e;border-radius:12px;color:#fde68a">Version metadata se nepodarilo nacist kompletne: ' + escapeHtml(data.versionLookupError) + '</div>' : '') +
   (data.updates.length
@@ -532,7 +608,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}' +
   '</style></head><body><div class="wrap">' +
-  '<div class="hero"><h1>Docker Updates - UI (Codex)</h1><p>' + escapeHtml(META.uiSubtitle) + ' · ' + escapeHtml(data.tailscaleNote) + '</p></div>' +
+  '<div class="hero"><h1>' + escapeHtml(META.uiHeading || ${JSON.stringify(uiHeading)}) + '</h1><p>' + escapeHtml(META.uiSubtitle) + ' · ' + escapeHtml(data.tailscaleNote) + '</p></div>' +
   (data.updates.length
     ? '<form id="update-form">' + cards +
         '<div class="toolbar"><button type="submit" id="submit-btn">Spustit update vybranych</button><button type="submit" class="secondary" id="dry-run-btn" data-mode="dry-run">Dry-run bez zmen</button><button type="button" class="ghost" id="toggle-btn">Prepnout vse</button></div>' +
@@ -562,17 +638,52 @@ function imageTag(imageRef) {
   return value.slice(colonIndex + 1);
 }
 
-const body = $input.first().json.body || {};
+function validationResult(summary, extra = {}) {
+  const requestedServices = Array.isArray(extra.requestedServices) ? extra.requestedServices : [];
+
+  return [{
+    json: {
+      ok: false,
+      isValid: false,
+      validationError: true,
+      errorCode: extra.errorCode || 'validation_error',
+      statusCode: extra.statusCode || 400,
+      requestedServices,
+      expandedServices: [],
+      services: requestedServices,
+      labels: [],
+      dryRun: Boolean(extra.dryRun),
+      summary,
+      message: summary,
+      sshCommand: null,
+      mailTo: META.mailTo,
+      floatingTagWarning: false,
+      floatingServices: [],
+      compactOutput: summary,
+    },
+  }];
+}
+
+const rawBody = $input.first().json.body;
+const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {};
 const requested = Array.isArray(body.services) ? body.services : [];
 const dryRun = Boolean(body.dryRun);
 
 if (!requested.length) {
-  throw new Error('Neni vybrana zadna sluzba.');
+  return validationResult('Neni vybrana zadna sluzba.', {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'no_services',
+  });
 }
 
 const invalid = requested.filter((service) => !SERVICE_MAP_BY_SERVICE[service]);
 if (invalid.length) {
-  throw new Error('Nepovolene sluzby: ' + invalid.join(', '));
+  return validationResult('Nepovolene sluzby: ' + invalid.join(', '), {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'invalid_services',
+  });
 }
 
 const expanded = [];
@@ -604,6 +715,9 @@ const sshCommand = 'bash ' + META.sshScriptPath + (dryRun ? ' --dry-run ' : ' ')
 
 return [{
   json: {
+    isValid: true,
+    validationError: false,
+    statusCode: 200,
     requestedServices: requested,
     expandedServices: expanded,
     labels,
@@ -645,6 +759,8 @@ return [{
 `.trim();
 
 const smallHelpers = `
+const META = ${JSON.stringify(meta)};
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -740,7 +856,7 @@ const issueRows = (data.inspectionIssues || []).map((item) =>
 ).join('');
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
-  '<h2 style="margin:0 0 8px;color:#f8fafc">Docker updates - Codex</h2>' +
+  '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
   '<p style="margin:0 0 16px;color:#94a3b8">Nalezeno ' + data.notifyCount + ' polozek. ' + escapeHtml(data.tailscaleNote) + '</p>' +
   (data.updates.length
     ? '<table style="width:100%;border-collapse:collapse;background:#111827;border-radius:12px;overflow:hidden">' +
@@ -803,7 +919,7 @@ const issueCards = (data.inspectionIssues || []).map((item) =>
 ).join('');
 
 const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-  '<title>Docker Updates</title>' +
+  '<title>' + escapeHtml(META.uiTitle) + '</title>' +
   '<style>' +
   'body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#e5e7eb;padding:24px}' +
   '.wrap{max-width:960px;margin:0 auto}.hero{margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:30px}.hero p{margin:0;color:#94a3b8}' +
@@ -815,7 +931,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning,.issues{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}.issues{background:#422006;border-color:#92400e;color:#fde68a}' +
   '</style></head><body><div class="wrap">' +
-  '<div class="hero"><h1>Docker Updates - UI (Codex)</h1><p>' + escapeHtml(data.tailscaleNote) + '</p></div>' +
+  '<div class="hero"><h1>' + escapeHtml(META.uiHeading || ${JSON.stringify(uiHeading)}) + '</h1><p>' + escapeHtml(META.uiSubtitle || data.tailscaleNote) + (META.uiSubtitle ? ' · ' + escapeHtml(data.tailscaleNote) : '') + '</p></div>' +
   (data.versionLookupError ? '<div class="warning">Version metadata se nepodarilo nacist kompletne: ' + escapeHtml(data.versionLookupError) + '</div>' : '') +
   (data.updates.length
     ? '<form id="update-form">' + cards +
@@ -962,26 +1078,43 @@ function sshNode(name, id, position, command) {
   };
 }
 
-const checkerWorkflow = {
-  name: 'Docker Updates - Checker (Codex)',
-  nodes: [
-    {
-      id: 'schedule-1',
-      name: 'Denni check 06:30',
-      type: 'n8n-nodes-base.scheduleTrigger',
-      typeVersion: 1.2,
+function checkerTriggerNode() {
+  if (checkerTriggerMode === 'manual') {
+    return {
+      id: 'manual-trigger-1',
+      name: 'Manualni test trigger',
+      type: 'n8n-nodes-base.manualTrigger',
+      typeVersion: 1,
       position: [240, 300],
-      parameters: {
-        rule: {
-          interval: [
-            {
-              field: 'cronExpression',
-              expression: '30 6 * * *',
-            },
-          ],
-        },
+      parameters: {},
+    };
+  }
+
+  return {
+    id: 'schedule-1',
+    name: 'Denni check 06:30',
+    type: 'n8n-nodes-base.scheduleTrigger',
+    typeVersion: 1.2,
+    position: [240, 300],
+    parameters: {
+      rule: {
+        interval: [
+          {
+            field: 'cronExpression',
+            expression: '30 6 * * *',
+          },
+        ],
       },
     },
+  };
+}
+
+const checkerTrigger = checkerTriggerNode();
+
+const checkerWorkflow = {
+  name: workflowNames.checker,
+  nodes: [
+    checkerTrigger,
     {
       id: 'code-1',
       name: 'Prepare Services',
@@ -1058,7 +1191,7 @@ const checkerWorkflow = {
     },
   ],
   connections: {
-    'Denni check 08:30': {
+    [checkerTrigger.name]: {
       main: [[{ node: 'Prepare Services', type: 'main', index: 0 }]],
     },
     'Prepare Services': {
@@ -1087,7 +1220,7 @@ const checkerWorkflow = {
 };
 
 const uiWorkflow = {
-  name: 'Docker Updates - UI (Codex)',
+  name: workflowNames.ui,
   nodes: [
     {
       id: 'webhook-ui',
@@ -1194,7 +1327,7 @@ const uiWorkflow = {
 };
 
 const runWorkflow = {
-  name: 'Docker Updates - Run (Codex)',
+  name: workflowNames.run,
   nodes: [
     {
       id: 'webhook-run',
@@ -1220,13 +1353,31 @@ const runWorkflow = {
         jsCode: runValidateCode,
       },
     },
-    sshNode('SSH Apply Update', 'ssh-run', [680, 300], '={{ $json.sshCommand }}'),
+    {
+      id: 'if-run-valid',
+      name: 'Valid Request?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 1,
+      position: [680, 300],
+      parameters: {
+        conditions: {
+          boolean: [
+            {
+              value1: '={{ $json.isValid }}',
+              operation: 'equal',
+              value2: true,
+            },
+          ],
+        },
+      },
+    },
+    sshNode('SSH Apply Update', 'ssh-run', [900, 220], '={{ $json.sshCommand }}'),
     {
       id: 'code-run-2',
       name: 'Build Result',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: [900, 300],
+      position: [1120, 220],
       parameters: {
         jsCode: runResultRenderCode,
       },
@@ -1236,11 +1387,13 @@ const runWorkflow = {
       name: 'Respond JSON',
       type: 'n8n-nodes-base.respondToWebhook',
       typeVersion: 1.4,
-      position: [1120, 220],
+      position: [1340, 140],
       parameters: {
         respondWith: 'json',
         responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
-        options: {},
+        options: {
+          responseCode: '={{ $json.statusCode || 200 }}',
+        },
       },
     },
     {
@@ -1248,13 +1401,14 @@ const runWorkflow = {
       name: 'Send Mail?',
       type: 'n8n-nodes-base.if',
       typeVersion: 1,
-      position: [1120, 400],
+      position: [1340, 340],
       parameters: {
         conditions: {
           boolean: [
             {
               value1: '={{ $json.dryRun }}',
-              operation: 'isFalse',
+              operation: 'equal',
+              value2: false,
             },
           ],
         },
@@ -1265,7 +1419,7 @@ const runWorkflow = {
       name: 'Send Result Mail',
       type: 'n8n-nodes-base.gmail',
       typeVersion: 2.1,
-      position: [1340, 340],
+      position: [1560, 340],
       parameters: {
         sendTo: meta.mailTo,
         subject: '={{ `${$json.dryRun ? ($json.ok ? "DRY-RUN OK" : "DRY-RUN FAIL") : ($json.ok ? "OK" : "FAIL")} Docker update: ${$json.labels.join(", ")}` }}',
@@ -1280,7 +1434,13 @@ const runWorkflow = {
       main: [[{ node: 'Validate Selection', type: 'main', index: 0 }]],
     },
     'Validate Selection': {
-      main: [[{ node: 'SSH Apply Update', type: 'main', index: 0 }]],
+      main: [[{ node: 'Valid Request?', type: 'main', index: 0 }]],
+    },
+    'Valid Request?': {
+      main: [
+        [{ node: 'SSH Apply Update', type: 'main', index: 0 }],
+        [{ node: 'Respond JSON', type: 'main', index: 0 }],
+      ],
     },
     'SSH Apply Update': {
       main: [[{ node: 'Build Result', type: 'main', index: 0 }]],
@@ -1299,13 +1459,13 @@ const runWorkflow = {
 };
 
 const artifacts = {
-  'allowed-services.txt': services.map((service) => service.service).join('\n') + '\n',
-  'workflow-A-checker.json': JSON.stringify(checkerWorkflow, null, 2) + '\n',
-  'workflow-B-ui.json': JSON.stringify(uiWorkflow, null, 2) + '\n',
-  'workflow-C-run.json': JSON.stringify(runWorkflow, null, 2) + '\n',
+  [artifactNames.allowedServices]: services.map((service) => service.service).join('\n') + '\n',
+  [artifactNames.checker]: JSON.stringify(checkerWorkflow, null, 2) + '\n',
+  [artifactNames.ui]: JSON.stringify(uiWorkflow, null, 2) + '\n',
+  [artifactNames.run]: JSON.stringify(runWorkflow, null, 2) + '\n',
 };
 
-const printOnly = process.argv[2];
+const printOnly = cli.printOnly;
 if (printOnly) {
   if (!artifacts[printOnly]) {
     console.error(`Unknown artifact: ${printOnly}`);
@@ -1319,4 +1479,4 @@ for (const [filename, content] of Object.entries(artifacts)) {
   await fs.writeFile(path.join(__dirname, filename), content);
 }
 
-console.log('Generated workflows and allowed-services.txt');
+console.log(`Generated artifacts from ${path.basename(configPath)}`);

@@ -1,0 +1,10 @@
+immich-server
+immich-machine-learning
+n8n
+nextcloud
+authelia
+vaultwarden
+paperless
+calibre-web
+komga
+audiobookshelf
