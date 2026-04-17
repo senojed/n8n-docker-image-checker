@@ -30,17 +30,52 @@ Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-tes
 - `README.hardening-test.md` - aktualni stav, overeni a otevrene body pro oddelenou hardening test variantu.
 - `service-map.json` - zdroj pravdy pro image -> service mapu a metadata sluzeb.
 - `service-map.hardening-test.json` - overlay config pro oddelenou test variantu vedle live workflowu.
+- `config.local.example.json` - sablona pro lokalni neveřejnou konfiguraci.
 - `generate-workflows.mjs` - generator workflow JSONu.
-- `workflow-A-checker.json` - n8n workflow pro denni kontrolu a mail.
-- `workflow-B-ui.json` - n8n workflow pro HTML UI.
-- `workflow-C-run.json` - n8n workflow pro spusteni updatu.
-- `workflow-hardening-test-A-checker.json` - manual-only checker pro hardening test.
-- `workflow-hardening-test-B-ui.json` - oddelene UI pro hardening test.
-- `workflow-hardening-test-C-run.json` - oddeleny run webhook pro hardening test.
+- `workflow-A-checker.json` - commitnuty template checker workflowu.
+- `workflow-B-ui.json` - commitnuty template UI workflowu.
+- `workflow-C-run.json` - commitnuty template run workflowu.
+- `workflow-hardening-test-A-checker.json` - commitnuty template checker workflowu pro hardening test.
+- `workflow-hardening-test-B-ui.json` - commitnuty template UI workflowu pro hardening test.
+- `workflow-hardening-test-C-run.json` - commitnuty template run workflowu pro hardening test.
 - `allowed-services.txt` - allowlist pro host skript.
 - `allowed-services.hardening-test.txt` - stejne data pro test variantu, vygenerovane separatne.
 - `docker-update-apply.sh` - host skript, ktery opravdu spousti update.
+- `docker-updates-audit.logrotate` - pripraveny `logrotate` config pro `/var/log/docker-updates/audit.jsonl`.
 - `docker-image-version-info.py` - host helper pro current/target verzi a digest bez realneho updatu.
+
+## Template vs rendered
+
+Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a adres.
+
+- commitnute `workflow-*.json` jsou template artefakty s placeholdery
+- lokalni `workflow-*.rendered.json` se generuji z `config.local.json`
+- `config.local.json` je gitignored a drzi lokalni hodnoty jako:
+  - `baseUrl`
+  - `mailTo`
+  - `uiPath`
+  - `runPath`
+  - `operators`
+  - `sshCredentialName`
+  - `sshHost`
+- `service-map.json` drzi bezpecne sdilena runtime metadata jako `auditLogPath`
+
+Zakladni workflow:
+
+```bash
+copy config.local.example.json config.local.json
+```
+
+Pak:
+
+```bash
+node generate-workflows.mjs --template-only
+node generate-workflows.mjs
+node generate-workflows.mjs --template-only --config service-map.hardening-test.json
+node generate-workflows.mjs --config service-map.hardening-test.json
+```
+
+Bez `config.local.json` generator pro rendered vystup skonci chybou. To je zamer.
 
 ## Co bude potreba v n8n
 
@@ -48,13 +83,7 @@ Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-tes
 - `OpenAI` credential - uz mas.
 - `SSH` credential - to pak nastavime spolu.
 
-Doporuceny SSH target:
-
-- host: `home-dataserver.tail9c609e.ts.net`
-- user: `jan`
-- auth: klic nebo heslo podle toho, co mas v n8n nejpohodlnejsi
-
-Workflowy jsou pripravene tak, aby se do nich pak credential jen prirazil v UI.
+Do n8n se maji importovat renderovane soubory `workflow-*.rendered.json`, ne template `workflow-*.json`.
 
 ## Live vs hardening test
 
@@ -72,44 +101,37 @@ Vedle nich je pripravena oddelena test varianta:
 
 Oddeleni test varianty:
 
-- UI webhook path: `docker-updates-ui-hardening-test-4f6c9d2a7b1e4c3f8a55`
-- Run webhook path: `docker-updates-run-hardening-test-8c2e7f1a6d4b4f39a2c1`
+- UI webhook path je oddeleny a bere se z `config.local.json`
+- Run webhook path je oddeleny a bere se z `config.local.json`
 - host script path: `/opt/docker/docker-update-apply.phase1.sh`
 - checker je manual-only, bez schedulu
 
 Generovani test artefaktu:
 
 ```bash
+node generate-workflows.mjs --template-only --config service-map.hardening-test.json
 node generate-workflows.mjs --config service-map.hardening-test.json
 ```
 
 ## SSH credential do n8n
 
-Prakticky otestovano:
-
-- z tohoto pocitace funguje SSH na `jan@home-dataserver.tail9c609e.ts.net`
-- z `n8n` kontejneru je dostupny SSH port hosta pres:
-  - `home-dataserver.tail9c609e.ts.net`
-  - `192.168.0.101`
-  - `172.17.0.1`
-
 Doporucene nastaveni credentialu v n8n:
 
-- credential name: `SSH Docker Host`
-- host: `home-dataserver.tail9c609e.ts.net`
+- credential name: lokalni hodnota z `config.local.json`
+- host: lokalni hodnota z `config.local.json`
 - port: `22`
-- user: `jan`
+- user: lokalni SSH user podle hostu
 - authentication method: `Private Key` je bezpecnejsi, `Password` je jednodussi pokud uz ho mas po ruce
-
-Fallback, kdyby v n8n zlobil Tailscale DNS resolve:
-
-- host: `192.168.0.101`
 
 ## Dulezite chovani
 
-- Canonical URL je `http://home-dataserver.tail9c609e.ts.net:5678`, aby to fungovalo i mimo lokalni sit pres Tailscale.
+- Canonical URL se bere z `config.local.json` (`meta.baseUrl`).
 - HTML stranka pouziva absolutni URL, ne relativni, aby fungovala i v novejsim n8n sandboxu.
 - AI review je doporuceni, ne matematicka garance. Krome AI se pouziva i konzervativni baseline podle typu sluzby.
+- `Run` workflow predava host skriptu `operator`, `workflowExecutionId` a `auditLogPath`.
+- Dokud neni hotovy bod `1.1`, UI bez explicitni volby operatora pouzije prvni hodnotu z `config.local.json`.
+- Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
+- Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
 
 ## Nasazeni na host
 
@@ -118,6 +140,7 @@ Host je v tomhle kroku uz pripraveny:
 - `/opt/docker/docker-update-apply.sh`
 - `/opt/docker/docker-image-version-info.py`
 - `/opt/docker/allowed-services.txt`
+- `/var/log/docker-updates/audit.jsonl`
 
 Na serveru je nastaveno:
 
@@ -125,14 +148,29 @@ Na serveru je nastaveno:
 chmod +x /opt/docker/docker-update-apply.sh
 ```
 
+Pro audit trail navic priprav:
+
+```bash
+install -d /var/log/docker-updates
+touch /var/log/docker-updates/audit.jsonl
+chown <ssh-user>:<ssh-group> /var/log/docker-updates /var/log/docker-updates/audit.jsonl
+chmod 755 /var/log/docker-updates
+chmod 664 /var/log/docker-updates/audit.jsonl
+cp docker-updates-audit.logrotate /etc/logrotate.d/docker-updates-audit
+logrotate -d /etc/logrotate.d/docker-updates-audit
+```
+
 Dalsi kroky:
 
-1. V n8n vytvor `SSH Docker Host` credential.
-2. V n8n importuj workflow JSONy.
-3. Doplni se `SSH` credential do node `SSH`.
-4. Doplni se `OpenAI` credential do node `OpenAI AI Review`.
-5. Doplni se `Gmail` credential do Gmail nodu.
-6. Workflowy se publikujou.
+1. Vytvor a vypln `config.local.json`.
+2. Vygeneruj `workflow-*.rendered.json`.
+3. Zkopiruj aktualni `docker-update-apply.sh` na host, pokud ma pouzivat audit log a nove argumenty `--operator` / `--workflow-execution-id`.
+4. V n8n vytvor odpovidajici credentialy.
+5. V n8n importuj renderovane workflow JSONy.
+6. Doplni se `SSH` credential do node `SSH`.
+7. Doplni se `OpenAI` credential do node `OpenAI AI Review`.
+8. Doplni se `Gmail` credential do Gmail nodu.
+9. Workflowy se publikujou.
 
 ## Poznamka k AI review
 

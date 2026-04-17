@@ -1,0 +1,11 @@
+# Adjust local ownership/create policy so the SSH account used by n8n can keep
+# appending after rotation. The tracked repo config intentionally avoids
+# hardcoding a local username.
+/var/log/docker-updates/audit.jsonl {
+  monthly
+  rotate 12
+  compress
+  delaycompress
+  missingok
+  notifempty
+}

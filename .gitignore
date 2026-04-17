@@ -1,1 +1,4 @@
 _work/
+config.local.json
+*.rendered.json
+audit.jsonl

@@ -2,8 +2,6 @@
   "extends": "./service-map.json",
   "meta": {
     "variantName": "Hardening Test",
-    "uiPath": "docker-updates-ui-hardening-test-4f6c9d2a7b1e4c3f8a55",
-    "runPath": "docker-updates-run-hardening-test-8c2e7f1a6d4b4f39a2c1",
     "sshScriptPath": "/opt/docker/docker-update-apply.phase1.sh",
     "uiTitle": "Docker Updates - Hardening Test",
     "uiSubtitle": "Hardening test varianta oddelena od live workflowu",

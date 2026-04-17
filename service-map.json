@@ -1,13 +1,10 @@
 {
   "meta": {
     "variantName": "Codex Variant",
-    "baseUrl": "http://home-dataserver.tail9c609e.ts.net:5678",
-    "mailTo": "honza.reich@gmail.com",
-    "uiPath": "docker-updates-ui-codex-9d2d8c3c4fbb4d4e8fb0",
-    "runPath": "docker-updates-run-codex-1d4b49bb2dcb4388a2b7",
     "sshScriptPath": "/opt/docker/docker-update-apply.sh",
     "sshInspectScriptPath": "/opt/docker/docker-image-version-info.py",
     "sshAllowedServicesPath": "/opt/docker/allowed-services.txt",
+    "auditLogPath": "/var/log/docker-updates/audit.jsonl",
     "aiModel": "gpt-4.1-mini",
     "tailscaleNote": "Mimo domov funguje odkaz ze zarizeni s aktivnim Tailscale.",
     "uiTitle": "Docker Updates",

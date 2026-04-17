@@ -5,10 +5,33 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const defaultConfigPath = path.join(__dirname, 'service-map.json');
+const defaultLocalConfigPath = path.join(__dirname, 'config.local.json');
+const templateMetaPlaceholders = {
+  baseUrl: '__BASE_URL__',
+  mailTo: '__MAIL_TO__',
+  uiPath: '__UI_PATH__',
+  runPath: '__RUN_PATH__',
+  operators: ['__OPERATOR__'],
+  sshCredentialName: '__SSH_CREDENTIAL_NAME__',
+  sshHost: '__SSH_HOST__',
+};
+
+function mergeConfig(baseConfig, overrideConfig) {
+  return {
+    ...baseConfig,
+    ...overrideConfig,
+    meta: {
+      ...(baseConfig.meta || {}),
+      ...(overrideConfig.meta || {}),
+    },
+    services: overrideConfig.services || baseConfig.services,
+  };
+}
 
 function parseCliArgs(argv) {
   let configPath = defaultConfigPath;
   let printOnly = null;
+  let templateOnly = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -33,6 +56,11 @@ function parseCliArgs(argv) {
       continue;
     }
 
+    if (arg === '--template-only') {
+      templateOnly = true;
+      continue;
+    }
+
     if (!arg.startsWith('--') && !printOnly) {
       printOnly = arg;
       continue;
@@ -41,7 +69,7 @@ function parseCliArgs(argv) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { configPath, printOnly };
+  return { configPath, printOnly, templateOnly };
 }
 
 async function loadConfig(filePath) {
@@ -54,20 +82,89 @@ async function loadConfig(filePath) {
 
   const baseConfig = await loadConfig(path.resolve(path.dirname(resolvedPath), rawConfig.extends));
 
-  return {
-    ...baseConfig,
-    ...rawConfig,
-    meta: {
-      ...(baseConfig.meta || {}),
-      ...(rawConfig.meta || {}),
-    },
-    services: rawConfig.services || baseConfig.services,
-  };
+  return mergeConfig(baseConfig, rawConfig);
+}
+
+async function loadLocalConfig(configPath) {
+  try {
+    const rawLocalConfig = JSON.parse(await fs.readFile(defaultLocalConfigPath, 'utf8'));
+    const relativeConfigPath = path.relative(__dirname, configPath).replace(/\\/g, '/');
+    const profileConfig =
+      rawLocalConfig.profiles?.[relativeConfigPath] ||
+      rawLocalConfig.profiles?.[path.basename(relativeConfigPath)] ||
+      {};
+
+    return mergeConfig(rawLocalConfig.defaults || {}, profileConfig);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function isUnsetLocalValue(value) {
+  if (typeof value !== 'string') {
+    return true;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return true;
+  }
+
+  return /^__.+__$/.test(trimmed);
+}
+
+function buildTemplateConfig(config) {
+  return mergeConfig(config, {
+    meta: templateMetaPlaceholders,
+  });
+}
+
+function validateRenderedConfig(config, configPath) {
+  const requiredMetaKeys = ['baseUrl', 'mailTo', 'uiPath', 'runPath', 'sshCredentialName', 'sshHost'];
+  const missingKeys = requiredMetaKeys.filter((key) => isUnsetLocalValue(config.meta?.[key]));
+  const operators = Array.isArray(config.meta?.operators)
+    ? config.meta.operators.filter((operator) => !isUnsetLocalValue(operator))
+    : [];
+
+  if (!operators.length) {
+    missingKeys.push('operators[0]');
+  }
+
+  if (missingKeys.length > 0) {
+    throw new Error(
+      `Missing required rendered config values for ${path.basename(configPath)}: ${missingKeys.join(', ')}. ` +
+        'Fill them in config.local.json or run with --template-only.',
+    );
+  }
+
+  return config;
+}
+
+function renderedArtifactName(filename) {
+  if (!filename.endsWith('.json')) {
+    return filename;
+  }
+
+  return filename.replace(/\.json$/, '.rendered.json');
 }
 
 const cli = parseCliArgs(process.argv.slice(2));
 const configPath = cli.configPath;
-const config = await loadConfig(configPath);
+const baseConfig = await loadConfig(configPath);
+const localConfig = cli.templateOnly ? null : await loadLocalConfig(configPath);
+
+if (!cli.templateOnly && !localConfig) {
+  throw new Error(
+    'Missing config.local.json. Copy config.local.example.json to config.local.json and fill local values, or run with --template-only.',
+  );
+}
+
+const config = cli.templateOnly
+  ? buildTemplateConfig(baseConfig)
+  : validateRenderedConfig(mergeConfig(baseConfig, localConfig), configPath);
 
 const { meta, services } = config;
 const workflowNames = meta.workflowNames || {
@@ -594,6 +691,18 @@ const unknownCards = (data.unknownUpdates || []).map((item) =>
 const issueCards = (data.inspectionIssues || []).map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
+const operatorOptions = Array.isArray(META.operators)
+  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
+  : [];
+const operatorField = operatorOptions.length > 1
+  ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
+      operatorOptions.map((operator) =>
+        '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator) + '</option>'
+      ).join('') +
+    '</select></label>'
+  : operatorOptions.length === 1
+    ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0]) + '">'
+    : '';
 
 const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<title>' + escapeHtml(META.uiTitle) + '</title>' +
@@ -604,6 +713,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '.check{padding-top:4px}.body{flex:1}.topline{display:flex;gap:12px;align-items:center;justify-content:space-between}.title{font-size:18px;font-weight:700}' +
   '.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.badge.safe{background:#14532d;color:#86efac}.badge.caution{background:#78350f;color:#fde68a}.badge.manual{background:#7f1d1d;color:#fecaca}' +
   '.reason{margin:10px 0;color:#cbd5e1;line-height:1.45}.meta{font-size:12px;color:#94a3b8;margin-top:8px}.meta a{color:#93c5fd}.meta strong{color:#cbd5e1}.meta.note{color:#fbbf24}.extra{font-size:12px;color:#c4b5fd;margin-top:8px}' +
+  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}' +
   '.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:24px 0}.toolbar button{background:#2563eb;color:#fff;border:none;border-radius:12px;padding:12px 18px;font-weight:700;cursor:pointer}.toolbar button.secondary{background:#1d4ed8;color:#dbeafe}.toolbar button.ghost{background:#1f2937;color:#e5e7eb}.toolbar button:disabled{opacity:.6;cursor:not-allowed}' +
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}' +
@@ -611,15 +721,16 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '<div class="hero"><h1>' + escapeHtml(META.uiHeading || ${JSON.stringify(uiHeading)}) + '</h1><p>' + escapeHtml(META.uiSubtitle) + ' · ' + escapeHtml(data.tailscaleNote) + '</p></div>' +
   (data.updates.length
     ? '<form id="update-form">' + cards +
-        '<div class="toolbar"><button type="submit" id="submit-btn">Spustit update vybranych</button><button type="submit" class="secondary" id="dry-run-btn" data-mode="dry-run">Dry-run bez zmen</button><button type="button" class="ghost" id="toggle-btn">Prepnout vse</button></div>' +
+        '<div class="toolbar">' + operatorField + '<button type="submit" id="submit-btn">Spustit update vybranych</button><button type="submit" class="secondary" id="dry-run-btn" data-mode="dry-run">Dry-run bez zmen</button><button type="button" class="ghost" id="toggle-btn">Prepnout vse</button></div>' +
       '</form>'
     : '<div class="empty">Zadne mapovane updaty k bezpecnemu spusteni. Pokud je niz neco v sekci unknown, je potreba nejdriv doplnit service map.</div>') +
+  (issueCards ? '<div class="warning"><h2>Kontrolni chyby</h2>' + issueCards + '</div>' : '') +
   (unknownCards ? '<div class="unknowns"><h2>Unknown updates</h2>' + unknownCards + '</div>' : '') +
   '<div id="status"></div></div>' +
   '<script>' +
-    'const form=document.getElementById("update-form");const status=document.getElementById("status");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
+    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
     'document.getElementById("toggle-btn")?.addEventListener("click",()=>{document.querySelectorAll(\\'input[name="services"]\\').forEach((box)=>{box.checked=!box.checked;});});' +
-    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
+    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
   '</script></body></html>';
 
 return [{ json: { html } }];
@@ -636,6 +747,10 @@ function imageTag(imageRef) {
   const colonIndex = value.lastIndexOf(':');
   if (colonIndex <= slashIndex) return null;
   return value.slice(colonIndex + 1);
+}
+
+function shellQuote(value) {
+  return "'" + String(value ?? '').replace(/'/g, "'\\\"'\\\"'") + "'";
 }
 
 function validationResult(summary, extra = {}) {
@@ -660,6 +775,9 @@ function validationResult(summary, extra = {}) {
       floatingTagWarning: false,
       floatingServices: [],
       compactOutput: summary,
+      operator: extra.operator || null,
+      workflowExecutionId: extra.workflowExecutionId || null,
+      auditLogPath: META.auditLogPath || null,
     },
   }];
 }
@@ -668,12 +786,40 @@ const rawBody = $input.first().json.body;
 const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {};
 const requested = Array.isArray(body.services) ? body.services : [];
 const dryRun = Boolean(body.dryRun);
+const configuredOperators = Array.isArray(META.operators)
+  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
+  : [];
+const rawOperator = typeof body.operator === 'string' ? body.operator.trim() : '';
+const operator = rawOperator || configuredOperators[0] || 'unknown';
+const workflowExecutionId = String($execution.id || '');
+
+if (rawOperator && configuredOperators.length && !configuredOperators.includes(rawOperator)) {
+  return validationResult('Nepovoleny operator: ' + rawOperator, {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'invalid_operator',
+    operator: rawOperator,
+    workflowExecutionId,
+  });
+}
+
+if (!operator || /^__.+__$/.test(operator)) {
+  return validationResult('Neni nastaven operator.', {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'missing_operator',
+    operator: rawOperator || null,
+    workflowExecutionId,
+  });
+}
 
 if (!requested.length) {
   return validationResult('Neni vybrana zadna sluzba.', {
     dryRun,
     requestedServices: requested,
     errorCode: 'no_services',
+    operator,
+    workflowExecutionId,
   });
 }
 
@@ -683,6 +829,8 @@ if (invalid.length) {
     dryRun,
     requestedServices: requested,
     errorCode: 'invalid_services',
+    operator,
+    workflowExecutionId,
   });
 }
 
@@ -711,7 +859,19 @@ const floatingServices = expanded
   })
   .map((meta) => meta.label || meta.service);
 const floatingTagWarning = floatingServices.length > 0;
-const sshCommand = 'bash ' + META.sshScriptPath + (dryRun ? ' --dry-run ' : ' ') + expanded.join(' ');
+const sshArguments = ['bash', META.sshScriptPath];
+if (dryRun) {
+  sshArguments.push('--dry-run');
+}
+if (META.auditLogPath) {
+  sshArguments.push('--audit-log-path', META.auditLogPath);
+}
+sshArguments.push('--operator', operator);
+if (workflowExecutionId) {
+  sshArguments.push('--workflow-execution-id', workflowExecutionId);
+}
+sshArguments.push(...expanded);
+const sshCommand = sshArguments.map(shellQuote).join(' ');
 
 return [{
   json: {
@@ -726,6 +886,9 @@ return [{
     mailTo: META.mailTo,
     floatingTagWarning,
     floatingServices,
+    operator,
+    workflowExecutionId,
+    auditLogPath: META.auditLogPath || null,
   },
 }];
 `.trim();
@@ -917,6 +1080,18 @@ const unknownCards = (data.unknownUpdates || []).map((item) =>
 const issueCards = (data.inspectionIssues || []).map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
+const operatorOptions = Array.isArray(META.operators)
+  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
+  : [];
+const operatorField = operatorOptions.length > 1
+  ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
+      operatorOptions.map((operator) =>
+        '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator) + '</option>'
+      ).join('') +
+    '</select></label>'
+  : operatorOptions.length === 1
+    ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0]) + '">'
+    : '';
 
 const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<title>' + escapeHtml(META.uiTitle) + '</title>' +
@@ -927,6 +1102,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '.check{padding-top:4px}.body{flex:1}.topline{display:flex;gap:12px;align-items:center;justify-content:space-between}.title{font-size:18px;font-weight:700}' +
   '.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.badge.safe{background:#14532d;color:#86efac}.badge.caution{background:#78350f;color:#fde68a}.badge.manual{background:#7f1d1d;color:#fecaca}' +
   '.reason{margin:10px 0;color:#cbd5e1;line-height:1.45}.meta{font-size:12px;color:#94a3b8;margin-top:8px}.meta a{color:#93c5fd}.meta strong{color:#cbd5e1}.meta.note{color:#fbbf24}.extra{font-size:12px;color:#c4b5fd;margin-top:8px}' +
+  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}' +
   '.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:24px 0}.toolbar button{background:#2563eb;color:#fff;border:none;border-radius:12px;padding:12px 18px;font-weight:700;cursor:pointer}.toolbar button.secondary{background:#1d4ed8;color:#dbeafe}.toolbar button.ghost{background:#1f2937;color:#e5e7eb}.toolbar button:disabled{opacity:.6;cursor:not-allowed}' +
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning,.issues{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}.issues{background:#422006;border-color:#92400e;color:#fde68a}' +
@@ -935,16 +1111,16 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   (data.versionLookupError ? '<div class="warning">Version metadata se nepodarilo nacist kompletne: ' + escapeHtml(data.versionLookupError) + '</div>' : '') +
   (data.updates.length
     ? '<form id="update-form">' + cards +
-        '<div class="toolbar"><button type="submit" id="submit-btn">Spustit update vybranych</button><button type="submit" class="secondary" id="dry-run-btn" data-mode="dry-run">Dry-run bez zmen</button><button type="button" class="ghost" id="toggle-btn">Prepnout vse</button></div>' +
+        '<div class="toolbar">' + operatorField + '<button type="submit" id="submit-btn">Spustit update vybranych</button><button type="submit" class="secondary" id="dry-run-btn" data-mode="dry-run">Dry-run bez zmen</button><button type="button" class="ghost" id="toggle-btn">Prepnout vse</button></div>' +
       '</form>'
     : '<div class="empty">Zadne zastarale mapovane sluzby k bezpecnemu spusteni.</div>') +
   (issueCards ? '<div class="issues"><h2>Kontrolni chyby</h2>' + issueCards + '</div>' : '') +
   (unknownCards ? '<div class="unknowns"><h2>Unknown updates</h2>' + unknownCards + '</div>' : '') +
   '<div id="status"></div></div>' +
   '<script>' +
-    'const form=document.getElementById("update-form");const status=document.getElementById("status");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
+    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
     'document.getElementById("toggle-btn")?.addEventListener("click",()=>{document.querySelectorAll(\\'input[name="services"]\\').forEach((box)=>{box.checked=!box.checked;});});' +
-    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
+    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
   '</script></body></html>';
 
 return [{ json: { html } }];
@@ -988,12 +1164,18 @@ const floatingTagWarning = Boolean(requestData.floatingTagWarning || structuredR
 const floatingServices = requestData.floatingServices || [];
 const compactOutput = combined.length > 4000 ? combined.slice(0, 4000) + '\\n...[truncated]' : combined;
 const actionLabel = dryRun ? 'Dry-run' : 'Update';
+const operator = structuredResult?.operator || requestData.operator || null;
+const workflowExecutionId = structuredResult?.workflow_execution_id || requestData.workflowExecutionId || String($execution.id || '');
+const auditHost = structuredResult?.host || null;
 
 const message = ok
   ? actionLabel + ' dokoncen pro: ' + requestData.labels.join(', ')
   : actionLabel + ' selhal pro: ' + requestData.labels.join(', ') + (summary ? ' - ' + summary : '');
 
 const metadataHtml = [
+  operator ? '<div><strong>Operator:</strong> ' + escapeHtml(operator) + '</div>' : '',
+  workflowExecutionId ? '<div><strong>Execution:</strong> ' + escapeHtml(workflowExecutionId) + '</div>' : '',
+  auditHost ? '<div><strong>Host:</strong> ' + escapeHtml(auditHost) + '</div>' : '',
   phase ? '<div><strong>Faze:</strong> ' + escapeHtml(phase) + '</div>' : '',
   summary ? '<div><strong>Shrnuti:</strong> ' + escapeHtml(summary) + '</div>' : '',
 ].filter(Boolean).join('');
@@ -1025,6 +1207,10 @@ return [{
     labels: requestData.labels,
     floatingTagWarning,
     floatingServices,
+    operator,
+    workflowExecutionId,
+    auditHost,
+    auditLogPath: requestData.auditLogPath || null,
     prevDigests,
     newDigests,
     structuredResult,
@@ -1390,7 +1576,7 @@ const runWorkflow = {
       position: [1340, 140],
       parameters: {
         respondWith: 'json',
-        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
+        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, operator: $json.operator, workflowExecutionId: $json.workflowExecutionId, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
         options: {
           responseCode: '={{ $json.statusCode || 200 }}',
         },
@@ -1459,10 +1645,14 @@ const runWorkflow = {
 };
 
 const artifacts = {
-  [artifactNames.allowedServices]: services.map((service) => service.service).join('\n') + '\n',
-  [artifactNames.checker]: JSON.stringify(checkerWorkflow, null, 2) + '\n',
-  [artifactNames.ui]: JSON.stringify(uiWorkflow, null, 2) + '\n',
-  [artifactNames.run]: JSON.stringify(runWorkflow, null, 2) + '\n',
+  [cli.templateOnly ? artifactNames.allowedServices : renderedArtifactName(artifactNames.allowedServices)]:
+    services.map((service) => service.service).join('\n') + '\n',
+  [cli.templateOnly ? artifactNames.checker : renderedArtifactName(artifactNames.checker)]:
+    JSON.stringify(checkerWorkflow, null, 2) + '\n',
+  [cli.templateOnly ? artifactNames.ui : renderedArtifactName(artifactNames.ui)]:
+    JSON.stringify(uiWorkflow, null, 2) + '\n',
+  [cli.templateOnly ? artifactNames.run : renderedArtifactName(artifactNames.run)]:
+    JSON.stringify(runWorkflow, null, 2) + '\n',
 };
 
 const printOnly = cli.printOnly;
@@ -1479,4 +1669,6 @@ for (const [filename, content] of Object.entries(artifacts)) {
   await fs.writeFile(path.join(__dirname, filename), content);
 }
 
-console.log(`Generated artifacts from ${path.basename(configPath)}`);
+console.log(
+  `Generated ${cli.templateOnly ? 'template' : 'rendered'} artifacts from ${path.basename(configPath)}`,
+);

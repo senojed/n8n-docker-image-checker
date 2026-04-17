@@ -4,11 +4,16 @@ set -euo pipefail
 COMPOSE_DIR="/opt/docker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
+DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
 
 dry_run=0
+operator=""
+workflow_execution_id=""
+audit_log_path="${DEFAULT_AUDIT_LOG_PATH}"
 services=()
 result_emitted=0
 current_phase="bootstrap"
+host_name="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
 
 declare -A allowed=()
 declare -A compose_services=()
@@ -34,7 +39,7 @@ map_payload() {
   done | sort
 }
 
-emit_result_json() {
+build_result_payload() {
   local status="$1"
   local phase="$2"
   local summary="$3"
@@ -47,6 +52,9 @@ emit_result_json() {
   RESULT_EXIT_CODE="$exit_code" \
   RESULT_DRY_RUN="$dry_run" \
   RESULT_FLOATING_TAG_WARNING="$floating_tag_warning" \
+  RESULT_OPERATOR="${operator:-unknown}" \
+  RESULT_WORKFLOW_EXECUTION_ID="${workflow_execution_id}" \
+  RESULT_HOST="${host_name}" \
   SERVICES_PAYLOAD="$(array_payload services)" \
   PREV_DIGESTS_PAYLOAD="$(map_payload prev_digests)" \
   NEW_DIGESTS_PAYLOAD="$(map_payload new_digests)" \
@@ -82,11 +90,52 @@ payload = {
     "services": lines("SERVICES_PAYLOAD"),
     "prev_digests": key_value_map("PREV_DIGESTS_PAYLOAD"),
     "new_digests": key_value_map("NEW_DIGESTS_PAYLOAD"),
+    "operator": os.environ.get("RESULT_OPERATOR") or None,
+    "workflow_execution_id": os.environ.get("RESULT_WORKFLOW_EXECUTION_ID") or None,
+    "host": os.environ.get("RESULT_HOST") or None,
 }
 
-print("__RESULT_JSON__:" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 PY
-  result_emitted=1
+}
+
+append_audit_entry() {
+  local result_payload="$1"
+  local audit_dir
+  audit_dir="$(dirname "${audit_log_path}")"
+  mkdir -p "${audit_dir}"
+
+  AUDIT_RESULT_PAYLOAD="${result_payload}" \
+  AUDIT_LOG_PATH="${audit_log_path}" \
+  AUDIT_OPERATOR="${operator:-unknown}" \
+  AUDIT_HOST="${host_name}" \
+  AUDIT_WORKFLOW_EXECUTION_ID="${workflow_execution_id}" \
+  python3 - <<'PY'
+import datetime
+import json
+import os
+
+
+payload = json.loads(os.environ["AUDIT_RESULT_PAYLOAD"])
+entry = {
+    "ts": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "operator": os.environ.get("AUDIT_OPERATOR") or "unknown",
+    "host": os.environ.get("AUDIT_HOST") or "unknown",
+    "services": payload.get("services") or [],
+    "prev_digests": payload.get("prev_digests") or {},
+    "new_digests": payload.get("new_digests") or {},
+    "status": payload.get("status"),
+    "phase": payload.get("phase"),
+    "dry_run": bool(payload.get("dry_run")),
+    "workflow_execution_id": os.environ.get("AUDIT_WORKFLOW_EXECUTION_ID") or None,
+    "summary": payload.get("summary"),
+    "exit_code": payload.get("exit_code"),
+    "floating_tag_warning": bool(payload.get("floating_tag_warning")),
+}
+
+with open(os.environ["AUDIT_LOG_PATH"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+PY
 }
 
 emit_legacy_ok() {
@@ -102,12 +151,40 @@ emit_legacy_error() {
   echo "__RESULT__:ERROR:${summary}"
 }
 
+emit_result() {
+  local status="$1"
+  local phase="$2"
+  local summary="$3"
+  local exit_code="$4"
+  local floating_tag_warning="${5:-0}"
+  local skip_audit="${6:-0}"
+  local payload
+
+  payload="$(build_result_payload "$status" "$phase" "$summary" "$exit_code" "$floating_tag_warning")"
+
+  if [[ "${skip_audit}" -eq 0 ]]; then
+    if ! append_audit_entry "${payload}"; then
+      current_phase="audit_log"
+      emit_result "error" "audit_log" "audit log append failed at ${audit_log_path}" 10 "$floating_tag_warning" 1
+      return
+    fi
+  fi
+
+  if [[ "${status}" == "ok" ]]; then
+    emit_legacy_ok
+  else
+    emit_legacy_error "$summary"
+  fi
+
+  echo "__RESULT_JSON__:${payload}"
+  result_emitted=1
+}
+
 finish_success() {
   local phase="$1"
   local summary="$2"
   local floating_tag_warning="${3:-0}"
-  emit_legacy_ok
-  emit_result_json "ok" "$phase" "$summary" 0 "$floating_tag_warning"
+  emit_result "ok" "$phase" "$summary" 0 "$floating_tag_warning"
   trap - EXIT
   exit 0
 }
@@ -117,8 +194,7 @@ finish_error() {
   local exit_code="$2"
   local summary="$3"
   local floating_tag_warning="${4:-0}"
-  emit_legacy_error "$summary"
-  emit_result_json "error" "$phase" "$summary" "$exit_code" "$floating_tag_warning"
+  emit_result "error" "$phase" "$summary" "$exit_code" "$floating_tag_warning"
   trap - EXIT
   exit 0
 }
@@ -127,8 +203,7 @@ cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 && $result_emitted -eq 0 ]]; then
     local summary="docker update failed (phase=${current_phase}, exit ${exit_code})"
-    emit_legacy_error "$summary"
-    emit_result_json "error" "$current_phase" "$summary" "$exit_code" 0
+    emit_result "error" "$current_phase" "$summary" "$exit_code" 0
     trap - EXIT
     exit 0
   fi
@@ -153,12 +228,48 @@ capture_container_digests() {
   done
 }
 
-for arg in "$@"; do
-  if [[ "$arg" == "--dry-run" ]]; then
-    dry_run=1
-    continue
-  fi
-  services+=("$arg")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --operator)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --operator"
+      fi
+      operator="$2"
+      shift 2
+      ;;
+    --workflow-execution-id)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --workflow-execution-id"
+      fi
+      workflow_execution_id="$2"
+      shift 2
+      ;;
+    --audit-log-path)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --audit-log-path"
+      fi
+      audit_log_path="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        services+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      finish_error "bootstrap" 1 "unknown argument '$1'"
+      ;;
+    *)
+      services+=("$1")
+      shift
+      ;;
+  esac
 done
 
 current_phase="allowlist"
@@ -210,6 +321,7 @@ if [[ ${dry_run} -eq 1 ]]; then
   current_phase="dry_run"
   echo "=== Docker Update Dry Run ==="
   echo "Services: ${services[*]}"
+  echo "Operator: ${operator:-unknown}"
   echo
   echo "Validated allowlist and compose service presence."
   echo
@@ -220,6 +332,7 @@ fi
 
 echo "=== Docker Update Apply ==="
 echo "Services: ${services[*]}"
+echo "Operator: ${operator:-unknown}"
 echo
 
 current_phase="pull"

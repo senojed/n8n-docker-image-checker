@@ -96,7 +96,7 @@ Zápis dělá host skript (nejjednodušší) pod ownership dedicated usera z bod
 
 ### 1.5 Secrets a workflow JSONy v gitu
 
-**Problém:** Workflow JSONy obsahují `webhookId` hodnoty a (po nasazení) path tokeny. Commitnutí do gitu = leak. Už teď `workflow-A-checker.json` obsahuje hard-coded `sendTo: honza.reich@gmail.com` — to není secret, ale ukazuje, že generator nepočítá s tím, že výstup je veřejný artefakt.
+**Problém:** Workflow JSONy obsahují `webhookId` hodnoty a (po nasazení) path tokeny. Commitnutí do gitu = leak. Stejný problém platí i pro `sendTo`, host nebo jména operátorů, pokud se renderují přímo do commitnutého artefaktu.
 
 **Změnit v:**
 - [generate-workflows.mjs](generate-workflows.mjs)
@@ -109,7 +109,7 @@ Zápis dělá host skript (nejjednodušší) pod ownership dedicated usera z bod
 4. README vysvětlí workflow: `node generate-workflows.mjs` → rendered → import do n8n.
 
 **Hotovo když:**
-- `git grep` nenajde v commitnuté verzi žádné jméno operátora, mail, webhook path token.
+- `git grep` nenajde v commitnuté verzi žádné jméno operátora, mail, webhook path token ani host.
 - `node generate-workflows.mjs` bez `config.local.json` skončí s čitelnou chybou.
 - README popisuje, které soubory jsou pro dev, které pro git, které pro n8n.
 

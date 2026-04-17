@@ -4,7 +4,7 @@ Tento dokument drzi aktualni stav oddelene hardening test varianty vedle live wo
 
 ## Aktualni faze
 
-Jsme ve `Phase 1 / functional verification`.
+Jsme ve `Phase 1 / functional verification + secrets hygiene + audit trail deployed`.
 
 To prakticky znamena:
 
@@ -12,6 +12,8 @@ To prakticky znamena:
 - UI webhook, Run webhook i host test script jsou oddelene od live varianty
 - probehlo realne overeni mailu, UI, dry-run i ostreho updatu
 - test `Run` workflow ted vraci i korektni `400` JSON chyby pro logicky neplatne requesty
+- repo ted drzi jen template workflow JSONy bez lokalnich URL, mailu a path tokenu
+- append-only audit trail do `/var/log/docker-updates/audit.jsonl` je nasazeny i na test hostu
 
 ## Nasazena test varianta
 
@@ -23,17 +25,38 @@ Workflowy v n8n:
 
 Oddeleni od live:
 
-- UI webhook path: `docker-updates-ui-hardening-test-4f6c9d2a7b1e4c3f8a55`
-- Run webhook path: `docker-updates-run-hardening-test-8c2e7f1a6d4b4f39a2c1`
+- UI webhook path je lokalni hodnota z `config.local.json`
+- Run webhook path je lokalni hodnota z `config.local.json`
 - host script path: `/opt/docker/docker-update-apply.phase1.sh`
 - checker trigger mode: `manual-only`
 
 Repo artefakty:
 
+- [config.local.example.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/config.local.example.json:1)
 - [service-map.hardening-test.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/service-map.hardening-test.json:1)
-- [workflow-hardening-test-A-checker.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-A-checker.json:1)
-- [workflow-hardening-test-B-ui.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-B-ui.json:1)
-- [workflow-hardening-test-C-run.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-C-run.json:1)
+- [docker-update-apply.sh](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/docker-update-apply.sh:1) - repo verze s audit append logikou
+- [docker-updates-audit.logrotate](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/docker-updates-audit.logrotate:1) - pripraveny host logrotate config
+- [workflow-hardening-test-A-checker.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-A-checker.json:1) - commitnuty template
+- [workflow-hardening-test-B-ui.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-B-ui.json:1) - commitnuty template
+- [workflow-hardening-test-C-run.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-C-run.json:1) - commitnuty template
+- lokalni import do n8n se dela z `workflow-hardening-test-*.rendered.json`
+
+## Template vs rendered
+
+Hardening test vetev se ted generuje ve dvou vrstvach:
+
+- repo drzi jen template artefakty bez lokalnich tokenu a URL
+- `config.local.json` je gitignored a nese `baseUrl`, `mailTo`, `uiPath`, `runPath`, `sshHost` a dalsi lokalni hodnoty
+- `operators` z `config.local.json` ted slouzi i pro UI/operator context a audit log
+- renderovane soubory `workflow-hardening-test-*.rendered.json` se generuji lokalne a ty se importuji do n8n
+
+Zakladni postup:
+
+```bash
+copy config.local.example.json config.local.json
+node generate-workflows.mjs --template-only --config service-map.hardening-test.json
+node generate-workflows.mjs --config service-map.hardening-test.json
+```
 
 ## Overeno
 
@@ -54,6 +77,8 @@ Validation testy `Run` webhooku:
 - spatny `Content-Type` vraci `400 Bad Request`
 - rozbity JSON vraci `422 Unprocessable Entity` z parseru n8n
 - validni dry-run vraci `200 OK`
+- validni dry-run po nasazeni `1.4` vraci i `operator` a `workflowExecutionId`
+- validni dry-run po nasazeni `1.4` zapisuje jeden JSONL radek do host `audit.jsonl`
 
 Failure-path test:
 
@@ -77,18 +102,25 @@ Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 
 - live `Docker Updates - Checker (Codex)` ma pri aktivaci chybu `object is not iterable`
 - to je oddeleny problem live sady, do hardening test varianty jsem kvuli tomu nesahal
+- na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
+- ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
 
 ## Jak to dal udrzovat
 
 Pri dalsi zmene hardening test varianty aktualizovat:
 
 1. [generate-workflows.mjs](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/generate-workflows.mjs:1)
-2. `node generate-workflows.mjs --config service-map.hardening-test.json`
-3. tento soubor
-4. jen prislusny test workflow v n8n, bez zasahu do live sady
+2. `service-map.hardening-test.json` nebo `config.local.example.json`, pokud se meni shape konfigurace
+3. `node generate-workflows.mjs --template-only --config service-map.hardening-test.json`
+4. `node generate-workflows.mjs --config service-map.hardening-test.json`
+5. tento soubor
+6. jen prislusny test workflow v n8n, bez zasahu do live sady
 
 ## Posledni dulezite zmeny
 
 - opraven `Build HTML` v test UI workflowu
 - doplnena separace test `Run` workflowu proti live scriptu
 - opravena validace test `Run` webhooku tak, aby vracela korektni `400` JSON odpovedi
+- dodelana separace template vs rendered workflow artefaktu a lokalni konfigurace
+- nasazen audit log mimo n8n executions na test host vcetne operator contextu
+- opravena code-node quoting chyba v test `Run` workflowu po deployi `1.4`

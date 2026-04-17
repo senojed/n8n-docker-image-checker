@@ -1,0 +1,27 @@
+{
+  "defaults": {
+    "meta": {
+      "baseUrl": "__BASE_URL__",
+      "mailTo": "__MAIL_TO__",
+      "operators": [
+        "__OPERATOR__"
+      ],
+      "sshCredentialName": "__SSH_CREDENTIAL_NAME__",
+      "sshHost": "__SSH_HOST__"
+    }
+  },
+  "profiles": {
+    "service-map.json": {
+      "meta": {
+        "uiPath": "__UI_PATH__",
+        "runPath": "__RUN_PATH__"
+      }
+    },
+    "service-map.hardening-test.json": {
+      "meta": {
+        "uiPath": "__HARDENING_TEST_UI_PATH__",
+        "runPath": "__HARDENING_TEST_RUN_PATH__"
+      }
+    }
+  }
+}
