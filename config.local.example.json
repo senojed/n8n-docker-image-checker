@@ -5,11 +5,19 @@
       "mailTo": "__MAIL_TO__",
       "mailFrom": "__MAIL_FROM__",
       "checkerHeartbeatUrl": "__CHECKER_HEARTBEAT_URL__",
+      "operatorIdentityHeader": "__OPERATOR_IDENTITY_HEADER__",
       "checkerHeartbeatHeaders": {
         "Host": "__CHECKER_HEARTBEAT_HOST__"
       },
       "operators": [
-        "__OPERATOR__"
+        {
+          "id": "__OPERATOR__",
+          "label": "__OPERATOR_LABEL__",
+          "token": "__OPERATOR_TOKEN__",
+          "identities": [
+            "__OPERATOR_IDENTITY__"
+          ]
+        }
       ],
       "smtpCredentialName": "__SMTP_CREDENTIAL_NAME__",
       "sshCredentialName": "__SSH_CREDENTIAL_NAME__",

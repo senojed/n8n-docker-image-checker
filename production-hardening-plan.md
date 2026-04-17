@@ -34,6 +34,8 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 
 **Problém:** Tailscale ACL omezuje *kdo se dostane k webhooku*, ale n8n na straně workflow neví, *kdo konkrétně* update schválil. Současné tajné path tokeny v URL jsou statické, sdílené, a navíc jsou commitnuté v `workflow-C-run.json` (viz bod 1.5). Pro audit trail (bod 1.4) je potřeba znát identitu.
 
+**Stav 2026-04-17:** Repo-first část je rozdělená na dvě vrstvy. `operator` je už povinný a generátor umí trusted header (`meta.operatorIdentityHeader`) i per-operator token fallback (`meta.operators[].token`). Nasazení ale ještě vyžaduje doplnit jednu z těchto variant do lokálního configu a přegenerovat rendered workflowy.
+
 **Změnit v:**
 - [workflow-B-ui.json](workflow-B-ui.json), HTML generátor — přidat pole `operator`
 - [workflow-C-run.json](workflow-C-run.json), node `Webhook Run` a `Validate Selection`

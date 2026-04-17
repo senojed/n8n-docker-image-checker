@@ -11,9 +11,17 @@ const templateMetaPlaceholders = {
   mailTo: '__MAIL_TO__',
   mailFrom: '__MAIL_FROM__',
   checkerHeartbeatUrl: '__CHECKER_HEARTBEAT_URL__',
+  operatorIdentityHeader: '__OPERATOR_IDENTITY_HEADER__',
   uiPath: '__UI_PATH__',
   runPath: '__RUN_PATH__',
-  operators: ['__OPERATOR__'],
+  operators: [
+    {
+      id: '__OPERATOR__',
+      label: '__OPERATOR_LABEL__',
+      token: '__OPERATOR_TOKEN__',
+      identities: ['__OPERATOR_IDENTITY__'],
+    },
+  ],
   smtpCredentialName: '__SMTP_CREDENTIAL_NAME__',
   sshCredentialName: '__SSH_CREDENTIAL_NAME__',
   sshHost: '__SSH_HOST__',
@@ -155,7 +163,20 @@ function validateRenderedConfig(config, configPath) {
   ];
   const missingKeys = requiredMetaKeys.filter((key) => isUnsetLocalValue(config.meta?.[key]));
   const operators = Array.isArray(config.meta?.operators)
-    ? config.meta.operators.filter((operator) => !isUnsetLocalValue(operator))
+    ? config.meta.operators
+        .map((operator) => {
+          if (typeof operator === 'string') {
+            return isUnsetLocalValue(operator) ? null : operator.trim();
+          }
+
+          if (!operator || typeof operator !== 'object' || Array.isArray(operator)) {
+            return null;
+          }
+
+          const operatorId = typeof operator.id === 'string' ? operator.id.trim() : '';
+          return isUnsetLocalValue(operatorId) ? null : operatorId;
+        })
+        .filter(Boolean)
     : [];
 
   if (!operators.length) {
@@ -297,6 +318,161 @@ function comparableVersion(value) {
     return raw.slice(1);
   }
   return raw;
+}
+
+function isPlaceholderValue(value) {
+  return typeof value === 'string' && /^__.+__$/.test(value.trim());
+}
+
+function identityCandidates(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return [];
+  }
+
+  const normalized = raw.toLowerCase();
+  const candidates = new Set([normalized]);
+  const localPart = normalized.includes('@') ? normalized.split('@')[0] : normalized;
+  if (localPart) {
+    candidates.add(localPart);
+  }
+  return [...candidates];
+}
+
+function normalizeOperatorEntry(entry) {
+  if (typeof entry === 'string') {
+    const id = entry.trim();
+    if (!id || isPlaceholderValue(id)) {
+      return null;
+    }
+
+    return {
+      id,
+      label: id,
+      token: null,
+      identities: identityCandidates(id),
+    };
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+
+  const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+  if (!id || isPlaceholderValue(id)) {
+    return null;
+  }
+
+  const label = typeof entry.label === 'string' && entry.label.trim() && !isPlaceholderValue(entry.label)
+    ? entry.label.trim()
+    : id;
+  const token = typeof entry.token === 'string' && entry.token.trim() && !isPlaceholderValue(entry.token)
+    ? entry.token.trim()
+    : null;
+  const rawIdentities = Array.isArray(entry.identities) ? entry.identities : [];
+  const identities = rawIdentities
+    .flatMap((identity) => identityCandidates(identity))
+    .filter(Boolean);
+
+  if (!identities.length) {
+    identities.push(...identityCandidates(id));
+  }
+
+  return {
+    id,
+    label,
+    token,
+    identities: [...new Set(identities)],
+  };
+}
+
+const CONFIGURED_OPERATORS = Array.isArray(META.operators)
+  ? META.operators.map(normalizeOperatorEntry).filter(Boolean)
+  : [];
+const CONFIGURED_OPERATOR_IDS = CONFIGURED_OPERATORS.map((operator) => operator.id);
+const CONFIGURED_OPERATOR_MAP = new Map(CONFIGURED_OPERATORS.map((operator) => [operator.id, operator]));
+const HAS_OPERATOR_TOKENS = CONFIGURED_OPERATORS.some((operator) => Boolean(operator.token));
+const TRUSTED_OPERATOR_HEADER = typeof META.operatorIdentityHeader === 'string' &&
+  META.operatorIdentityHeader.trim() &&
+  !isPlaceholderValue(META.operatorIdentityHeader)
+  ? META.operatorIdentityHeader.trim()
+  : null;
+
+function getOperatorEntry(operatorId) {
+  if (typeof operatorId !== 'string') {
+    return null;
+  }
+  return CONFIGURED_OPERATOR_MAP.get(operatorId.trim()) || null;
+}
+
+function readHeaderValue(headers, headerName) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers) || !headerName) {
+    return null;
+  }
+
+  const targetName = headerName.toLowerCase();
+  const match = Object.entries(headers).find(([name]) => String(name || '').toLowerCase() === targetName);
+  if (!match) {
+    return null;
+  }
+
+  const [, value] = match;
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function resolveOperatorFromIdentity(identityValue) {
+  const candidates = identityCandidates(identityValue);
+  if (!candidates.length) {
+    return null;
+  }
+
+  for (const operator of CONFIGURED_OPERATORS) {
+    const identitySet = new Set(operator.identities.flatMap((identity) => identityCandidates(identity)));
+    identitySet.add(operator.id.toLowerCase());
+    identitySet.add(operator.label.toLowerCase());
+
+    if (candidates.some((candidate) => identitySet.has(candidate))) {
+      return operator;
+    }
+  }
+
+  return null;
+}
+
+function resolveTrustedRequestOperator(headers) {
+  if (!TRUSTED_OPERATOR_HEADER) {
+    return null;
+  }
+
+  const headerValue = readHeaderValue(headers, TRUSTED_OPERATOR_HEADER);
+  if (!headerValue) {
+    return null;
+  }
+
+  return resolveOperatorFromIdentity(headerValue);
+}
+
+function buildUiUrl(operatorEntry) {
+  const baseUrl = META.baseUrl + '/webhook/' + META.uiPath;
+  if (!operatorEntry) {
+    return baseUrl;
+  }
+
+  const entry = typeof operatorEntry === 'string' ? getOperatorEntry(operatorEntry) : operatorEntry;
+  if (!entry) {
+    return baseUrl;
+  }
+
+  const url = new URL(baseUrl);
+  url.searchParams.set('operator', entry.id);
+  if (entry.token) {
+    url.searchParams.set('token', entry.token);
+  }
+  return url.toString();
 }
 
 function buildVersionInspectCommand(updates) {
@@ -497,9 +673,21 @@ function buildPreparedCatalog() {
 
   return {
     baseUrl: META.baseUrl,
-    uiUrl: META.baseUrl + '/webhook/' + META.uiPath,
+    uiUrl: buildUiUrl(),
     runUrl: META.baseUrl + '/webhook/' + META.runPath,
     checkerHeartbeatUrl: META.checkerHeartbeatUrl || null,
+    uiAccessLinks: HAS_OPERATOR_TOKENS && !TRUSTED_OPERATOR_HEADER
+      ? CONFIGURED_OPERATORS.filter((operator) => operator.token).map((operator) => ({
+          id: operator.id,
+          label: operator.label,
+          url: buildUiUrl(operator),
+        }))
+      : [],
+    authMode: TRUSTED_OPERATOR_HEADER
+      ? 'trusted_header'
+      : HAS_OPERATOR_TOKENS
+        ? 'operator_token'
+        : 'operator_only',
     updates,
     unknownUpdates: [],
     inspectionIssues: [],
@@ -659,6 +847,14 @@ const unknownRows = (data.unknownUpdates || []).map((item) =>
 const issueRows = (data.inspectionIssues || []).map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fde68a"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
+const uiAccessLinks = Array.isArray(data.uiAccessLinks) ? data.uiAccessLinks : [];
+const uiActions = uiAccessLinks.length > 1
+  ? '<div style="margin-top:24px;display:flex;flex-wrap:wrap;gap:12px">' +
+      uiAccessLinks.map((link) =>
+        '<a href="' + escapeHtml(link.url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
+      ).join('') +
+    '</div>'
+  : '<div style="margin-top:24px"><a href="' + escapeHtml(uiAccessLinks[0]?.url || data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
   '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
@@ -673,7 +869,7 @@ const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;
   (unknownRows
     ? '<div style="margin-top:20px;padding:16px;background:#3f1d1d;border:1px solid #7f1d1d;border-radius:12px"><h3 style="margin:0 0 8px;color:#fecaca">Neznamy update - vyzaduje doplneni mapy</h3><ul style="padding:0;margin:0">' + unknownRows + '</ul></div>'
     : '') +
-  '<div style="margin-top:24px"><a href="' + escapeHtml(data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>' +
+  uiActions +
   '</div>';
 
 return [{
@@ -724,18 +920,66 @@ const unknownCards = (data.unknownUpdates || []).map((item) =>
 const issueCards = (data.inspectionIssues || []).map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
-const operatorOptions = Array.isArray(META.operators)
-  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
-  : [];
-const operatorField = operatorOptions.length > 1
-  ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
-      operatorOptions.map((operator) =>
-        '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator) + '</option>'
-      ).join('') +
-    '</select></label>'
-  : operatorOptions.length === 1
-    ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0]) + '">'
-    : '';
+const webhookRequest = $('Webhook UI').first().json || {};
+const requestQuery = webhookRequest.query && typeof webhookRequest.query === 'object' && !Array.isArray(webhookRequest.query)
+  ? webhookRequest.query
+  : {};
+const requestHeaders = webhookRequest.headers && typeof webhookRequest.headers === 'object' && !Array.isArray(webhookRequest.headers)
+  ? webhookRequest.headers
+  : {};
+const authRequired = Boolean(TRUSTED_OPERATOR_HEADER || HAS_OPERATOR_TOKENS);
+const queryOperatorId = typeof requestQuery.operator === 'string' ? requestQuery.operator.trim() : '';
+const queryToken = typeof requestQuery.token === 'string' ? requestQuery.token.trim() : '';
+const trustedOperator = resolveTrustedRequestOperator(requestHeaders);
+const requestedOperator = queryOperatorId ? getOperatorEntry(queryOperatorId) : null;
+let currentOperator = null;
+let authError = '';
+
+if (trustedOperator) {
+  currentOperator = trustedOperator;
+  if (requestedOperator && requestedOperator.id !== trustedOperator.id) {
+    authError = 'Operator v URL neodpovida trusted identite.';
+  }
+} else if (requestedOperator && requestedOperator.token) {
+  if (queryToken && queryToken === requestedOperator.token) {
+    currentOperator = requestedOperator;
+  } else {
+    authError = 'Neplatny operator token.';
+  }
+} else if (requestedOperator && !requestedOperator.token && !authRequired) {
+  currentOperator = requestedOperator;
+} else if (!requestedOperator && CONFIGURED_OPERATORS.length === 1 && !authRequired) {
+  currentOperator = CONFIGURED_OPERATORS[0];
+} else if (authRequired) {
+  authError = TRUSTED_OPERATOR_HEADER
+    ? 'Nepodarilo se overit operatora z trusted hlavicky.'
+    : 'Chybi nebo je neplatny operator token.';
+}
+
+if (authError) {
+  const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>' + escapeHtml(META.uiTitle) + '</title>' +
+    '<style>body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#e5e7eb;padding:24px}.wrap{max-width:720px;margin:0 auto}.error{background:#3f1d1d;border:1px solid #7f1d1d;border-radius:16px;padding:20px}h1{margin:0 0 12px;font-size:28px}p{margin:0 0 12px;color:#fecaca}.meta{color:#cbd5e1;font-size:14px}</style></head><body><div class="wrap"><div class="error"><h1>Pristup odmitnut</h1><p>' + escapeHtml(authError) + '</p><div class="meta">Tahle UI varianta je vazana na operatora. Otevri ji z aktualniho checker mailu nebo pres trusted access vrstvu.</div></div></div></body></html>';
+  return [{ json: { html } }];
+}
+
+const operatorOptions = CONFIGURED_OPERATORS;
+const operatorField = currentOperator
+  ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(currentOperator.id) + '">' +
+    (currentOperator.token
+      ? '<input type="hidden" id="operator-token" name="operatorToken" value="' + escapeHtml(currentOperator.token) + '">'
+      : '') +
+    '<div class="operator-badge">Operator: ' + escapeHtml(currentOperator.label) + '</div>'
+  : operatorOptions.length > 1
+    ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
+        operatorOptions.map((operator) =>
+          '<option value="' + escapeHtml(operator.id) + '">' + escapeHtml(operator.label) + '</option>'
+        ).join('') +
+      '</select></label>'
+    : operatorOptions.length === 1
+      ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0].id) + '">' +
+        '<div class="operator-badge">Operator: ' + escapeHtml(operatorOptions[0].label) + '</div>'
+      : '';
 
 const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<title>' + escapeHtml(META.uiTitle) + '</title>' +
@@ -746,7 +990,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '.check{padding-top:4px}.body{flex:1}.topline{display:flex;gap:12px;align-items:center;justify-content:space-between}.title{font-size:18px;font-weight:700}' +
   '.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.badge.safe{background:#14532d;color:#86efac}.badge.caution{background:#78350f;color:#fde68a}.badge.manual{background:#7f1d1d;color:#fecaca}' +
   '.reason{margin:10px 0;color:#cbd5e1;line-height:1.45}.meta{font-size:12px;color:#94a3b8;margin-top:8px}.meta a{color:#93c5fd}.meta strong{color:#cbd5e1}.meta.note{color:#fbbf24}.extra{font-size:12px;color:#c4b5fd;margin-top:8px}' +
-  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}' +
+  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}.operator-badge{padding:10px 14px;border-radius:12px;background:#0f172a;border:1px solid #334155;color:#cbd5e1;font-size:13px}' +
   '.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:24px 0}.toolbar button{background:#2563eb;color:#fff;border:none;border-radius:12px;padding:12px 18px;font-weight:700;cursor:pointer}.toolbar button.secondary{background:#1d4ed8;color:#dbeafe}.toolbar button.ghost{background:#1f2937;color:#e5e7eb}.toolbar button:disabled{opacity:.6;cursor:not-allowed}' +
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}' +
@@ -761,9 +1005,9 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   (unknownCards ? '<div class="unknowns"><h2>Unknown updates</h2>' + unknownCards + '</div>' : '') +
   '<div id="status"></div></div>' +
   '<script>' +
-    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
+    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const operatorTokenInput=document.getElementById("operator-token");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
     'document.getElementById("toggle-btn")?.addEventListener("click",()=>{document.querySelectorAll(\\'input[name="services"]\\').forEach((box)=>{box.checked=!box.checked;});});' +
-    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
+    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";const operatorToken=operatorTokenInput?.value||"";if(!operator){window.alert("Neni nastaven operator.");return;}if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator,operatorToken})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
   '</script></body></html>';
 
 return [{ json: { html } }];
@@ -817,16 +1061,31 @@ function validationResult(summary, extra = {}) {
 
 const rawBody = $input.first().json.body;
 const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {};
+const requestHeaders = $input.first().json.headers && typeof $input.first().json.headers === 'object' && !Array.isArray($input.first().json.headers)
+  ? $input.first().json.headers
+  : {};
 const requested = Array.isArray(body.services) ? body.services : [];
 const dryRun = Boolean(body.dryRun);
-const configuredOperators = Array.isArray(META.operators)
-  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
-  : [];
 const rawOperator = typeof body.operator === 'string' ? body.operator.trim() : '';
-const operator = rawOperator || configuredOperators[0] || 'unknown';
+const operator = rawOperator;
+const operatorEntry = getOperatorEntry(operator);
+const trustedOperator = resolveTrustedRequestOperator(requestHeaders);
+const operatorToken = typeof body.operatorToken === 'string'
+  ? body.operatorToken.trim()
+  : String(readHeaderValue(requestHeaders, 'x-operator-token') || '').trim();
 const workflowExecutionId = String($execution.id || '');
 
-if (rawOperator && configuredOperators.length && !configuredOperators.includes(rawOperator)) {
+if (!operator || /^__.+__$/.test(operator)) {
+  return validationResult('Neni nastaven operator.', {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'missing_operator',
+    operator: rawOperator || null,
+    workflowExecutionId,
+  });
+}
+
+if (CONFIGURED_OPERATOR_IDS.length && !operatorEntry) {
   return validationResult('Nepovoleny operator: ' + rawOperator, {
     dryRun,
     requestedServices: requested,
@@ -836,12 +1095,42 @@ if (rawOperator && configuredOperators.length && !configuredOperators.includes(r
   });
 }
 
-if (!operator || /^__.+__$/.test(operator)) {
-  return validationResult('Neni nastaven operator.', {
+if (TRUSTED_OPERATOR_HEADER && !trustedOperator && !operatorEntry?.token) {
+  return validationResult('Nepodarilo se overit operatora z trusted hlavicky.', {
     dryRun,
     requestedServices: requested,
-    errorCode: 'missing_operator',
-    operator: rawOperator || null,
+    errorCode: 'missing_operator_identity',
+    operator,
+    workflowExecutionId,
+  });
+}
+
+if (!trustedOperator && HAS_OPERATOR_TOKENS && !operatorEntry?.token) {
+  return validationResult('Operator nema nastaveny token.', {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'missing_operator_token_config',
+    operator,
+    workflowExecutionId,
+  });
+}
+
+if (trustedOperator && trustedOperator.id !== operator) {
+  return validationResult('Trusted identita neodpovida operatorovi: ' + operator, {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'operator_identity_mismatch',
+    operator,
+    workflowExecutionId,
+  });
+}
+
+if (!trustedOperator && operatorEntry?.token && operatorToken !== operatorEntry.token) {
+  return validationResult('Neplatny operator token.', {
+    dryRun,
+    requestedServices: requested,
+    errorCode: 'invalid_operator_token',
+    operator,
     workflowExecutionId,
   });
 }
@@ -972,6 +1261,141 @@ function verdictUi(verdict) {
   return { label: 'Pozor', className: 'caution' };
 }
 
+function isPlaceholderValue(value) {
+  return typeof value === 'string' && /^__.+__$/.test(value.trim());
+}
+
+function identityCandidates(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return [];
+  }
+
+  const normalized = raw.toLowerCase();
+  const candidates = new Set([normalized]);
+  const localPart = normalized.includes('@') ? normalized.split('@')[0] : normalized;
+  if (localPart) {
+    candidates.add(localPart);
+  }
+  return [...candidates];
+}
+
+function normalizeOperatorEntry(entry) {
+  if (typeof entry === 'string') {
+    const id = entry.trim();
+    if (!id || isPlaceholderValue(id)) {
+      return null;
+    }
+
+    return {
+      id,
+      label: id,
+      token: null,
+      identities: identityCandidates(id),
+    };
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+
+  const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+  if (!id || isPlaceholderValue(id)) {
+    return null;
+  }
+
+  const label = typeof entry.label === 'string' && entry.label.trim() && !isPlaceholderValue(entry.label)
+    ? entry.label.trim()
+    : id;
+  const token = typeof entry.token === 'string' && entry.token.trim() && !isPlaceholderValue(entry.token)
+    ? entry.token.trim()
+    : null;
+  const rawIdentities = Array.isArray(entry.identities) ? entry.identities : [];
+  const identities = rawIdentities
+    .flatMap((identity) => identityCandidates(identity))
+    .filter(Boolean);
+
+  if (!identities.length) {
+    identities.push(...identityCandidates(id));
+  }
+
+  return {
+    id,
+    label,
+    token,
+    identities: [...new Set(identities)],
+  };
+}
+
+const CONFIGURED_OPERATORS = Array.isArray(META.operators)
+  ? META.operators.map(normalizeOperatorEntry).filter(Boolean)
+  : [];
+const HAS_OPERATOR_TOKENS = CONFIGURED_OPERATORS.some((operator) => Boolean(operator.token));
+const TRUSTED_OPERATOR_HEADER = typeof META.operatorIdentityHeader === 'string' &&
+  META.operatorIdentityHeader.trim() &&
+  !isPlaceholderValue(META.operatorIdentityHeader)
+  ? META.operatorIdentityHeader.trim()
+  : null;
+
+function getOperatorEntry(operatorId) {
+  if (typeof operatorId !== 'string') {
+    return null;
+  }
+  const normalized = operatorId.trim();
+  return CONFIGURED_OPERATORS.find((operator) => operator.id === normalized) || null;
+}
+
+function readHeaderValue(headers, headerName) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers) || !headerName) {
+    return null;
+  }
+
+  const targetName = headerName.toLowerCase();
+  const match = Object.entries(headers).find(([name]) => String(name || '').toLowerCase() === targetName);
+  if (!match) {
+    return null;
+  }
+
+  const [, value] = match;
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function resolveOperatorFromIdentity(identityValue) {
+  const candidates = identityCandidates(identityValue);
+  if (!candidates.length) {
+    return null;
+  }
+
+  for (const operator of CONFIGURED_OPERATORS) {
+    const identitySet = new Set(operator.identities.flatMap((identity) => identityCandidates(identity)));
+    identitySet.add(operator.id.toLowerCase());
+    identitySet.add(operator.label.toLowerCase());
+
+    if (candidates.some((candidate) => identitySet.has(candidate))) {
+      return operator;
+    }
+  }
+
+  return null;
+}
+
+function resolveTrustedRequestOperator(headers) {
+  if (!TRUSTED_OPERATOR_HEADER) {
+    return null;
+  }
+
+  const headerValue = readHeaderValue(headers, TRUSTED_OPERATOR_HEADER);
+  if (!headerValue) {
+    return null;
+  }
+
+  return resolveOperatorFromIdentity(headerValue);
+}
+
 function readAiPayload(nodeJson) {
   const content = nodeJson?.message?.content ?? nodeJson?.content ?? nodeJson?.output ?? '';
   if (typeof content === 'string' && content.trim()) {
@@ -1050,6 +1474,14 @@ const unknownRows = (data.unknownUpdates || []).map((item) =>
 const issueRows = (data.inspectionIssues || []).map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fde68a"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
+const uiAccessLinks = Array.isArray(data.uiAccessLinks) ? data.uiAccessLinks : [];
+const uiActions = uiAccessLinks.length > 1
+  ? '<div style="margin-top:24px;display:flex;flex-wrap:wrap;gap:12px">' +
+      uiAccessLinks.map((link) =>
+        '<a href="' + escapeHtml(link.url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
+      ).join('') +
+    '</div>'
+  : '<div style="margin-top:24px"><a href="' + escapeHtml(uiAccessLinks[0]?.url || data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
   '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
@@ -1066,7 +1498,7 @@ const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;
   (unknownRows
     ? '<div style="margin-top:20px;padding:16px;background:#3f1d1d;border:1px solid #7f1d1d;border-radius:12px"><h3 style="margin:0 0 8px;color:#fecaca">Neznamy update - vyzaduje doplneni mapy</h3><ul style="padding:0;margin:0">' + unknownRows + '</ul></div>'
     : '') +
-  '<div style="margin-top:24px"><a href="' + escapeHtml(data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>' +
+  uiActions +
   '</div>';
 
 return [{ json: { ...data, subject: 'Docker updates - ' + data.notifyCount + ' polozek', html } }];
@@ -1113,18 +1545,66 @@ const unknownCards = (data.unknownUpdates || []).map((item) =>
 const issueCards = (data.inspectionIssues || []).map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
-const operatorOptions = Array.isArray(META.operators)
-  ? META.operators.filter((value) => typeof value === 'string' && value.trim() && !/^__.+__$/.test(value.trim()))
-  : [];
-const operatorField = operatorOptions.length > 1
-  ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
-      operatorOptions.map((operator) =>
-        '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator) + '</option>'
-      ).join('') +
-    '</select></label>'
-  : operatorOptions.length === 1
-    ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0]) + '">'
-    : '';
+const webhookRequest = $('Webhook UI').first().json || {};
+const requestQuery = webhookRequest.query && typeof webhookRequest.query === 'object' && !Array.isArray(webhookRequest.query)
+  ? webhookRequest.query
+  : {};
+const requestHeaders = webhookRequest.headers && typeof webhookRequest.headers === 'object' && !Array.isArray(webhookRequest.headers)
+  ? webhookRequest.headers
+  : {};
+const authRequired = Boolean(TRUSTED_OPERATOR_HEADER || HAS_OPERATOR_TOKENS);
+const queryOperatorId = typeof requestQuery.operator === 'string' ? requestQuery.operator.trim() : '';
+const queryToken = typeof requestQuery.token === 'string' ? requestQuery.token.trim() : '';
+const trustedOperator = resolveTrustedRequestOperator(requestHeaders);
+const requestedOperator = queryOperatorId ? getOperatorEntry(queryOperatorId) : null;
+let currentOperator = null;
+let authError = '';
+
+if (trustedOperator) {
+  currentOperator = trustedOperator;
+  if (requestedOperator && requestedOperator.id !== trustedOperator.id) {
+    authError = 'Operator v URL neodpovida trusted identite.';
+  }
+} else if (requestedOperator && requestedOperator.token) {
+  if (queryToken && queryToken === requestedOperator.token) {
+    currentOperator = requestedOperator;
+  } else {
+    authError = 'Neplatny operator token.';
+  }
+} else if (requestedOperator && !requestedOperator.token && !authRequired) {
+  currentOperator = requestedOperator;
+} else if (!requestedOperator && CONFIGURED_OPERATORS.length === 1 && !authRequired) {
+  currentOperator = CONFIGURED_OPERATORS[0];
+} else if (authRequired) {
+  authError = TRUSTED_OPERATOR_HEADER
+    ? 'Nepodarilo se overit operatora z trusted hlavicky.'
+    : 'Chybi nebo je neplatny operator token.';
+}
+
+if (authError) {
+  const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>' + escapeHtml(META.uiTitle) + '</title>' +
+    '<style>body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#e5e7eb;padding:24px}.wrap{max-width:720px;margin:0 auto}.error{background:#3f1d1d;border:1px solid #7f1d1d;border-radius:16px;padding:20px}h1{margin:0 0 12px;font-size:28px}p{margin:0 0 12px;color:#fecaca}.meta{color:#cbd5e1;font-size:14px}</style></head><body><div class="wrap"><div class="error"><h1>Pristup odmitnut</h1><p>' + escapeHtml(authError) + '</p><div class="meta">Tahle UI varianta je vazana na operatora. Otevri ji z aktualniho checker mailu nebo pres trusted access vrstvu.</div></div></div></body></html>';
+  return [{ json: { html } }];
+}
+
+const operatorOptions = CONFIGURED_OPERATORS;
+const operatorField = currentOperator
+  ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(currentOperator.id) + '">' +
+    (currentOperator.token
+      ? '<input type="hidden" id="operator-token" name="operatorToken" value="' + escapeHtml(currentOperator.token) + '">'
+      : '') +
+    '<div class="operator-badge">Operator: ' + escapeHtml(currentOperator.label) + '</div>'
+  : operatorOptions.length > 1
+    ? '<label class="operator-field"><span>Operator</span><select id="operator" name="operator">' +
+        operatorOptions.map((operator) =>
+          '<option value="' + escapeHtml(operator.id) + '">' + escapeHtml(operator.label) + '</option>'
+        ).join('') +
+      '</select></label>'
+    : operatorOptions.length === 1
+      ? '<input type="hidden" id="operator" name="operator" value="' + escapeHtml(operatorOptions[0].id) + '">' +
+        '<div class="operator-badge">Operator: ' + escapeHtml(operatorOptions[0].label) + '</div>'
+      : '';
 
 const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<title>' + escapeHtml(META.uiTitle) + '</title>' +
@@ -1135,7 +1615,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   '.check{padding-top:4px}.body{flex:1}.topline{display:flex;gap:12px;align-items:center;justify-content:space-between}.title{font-size:18px;font-weight:700}' +
   '.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.badge.safe{background:#14532d;color:#86efac}.badge.caution{background:#78350f;color:#fde68a}.badge.manual{background:#7f1d1d;color:#fecaca}' +
   '.reason{margin:10px 0;color:#cbd5e1;line-height:1.45}.meta{font-size:12px;color:#94a3b8;margin-top:8px}.meta a{color:#93c5fd}.meta strong{color:#cbd5e1}.meta.note{color:#fbbf24}.extra{font-size:12px;color:#c4b5fd;margin-top:8px}' +
-  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}' +
+  '.operator-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#cbd5e1}.operator-field select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:180px}.operator-badge{padding:10px 14px;border-radius:12px;background:#0f172a;border:1px solid #334155;color:#cbd5e1;font-size:13px}' +
   '.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:24px 0}.toolbar button{background:#2563eb;color:#fff;border:none;border-radius:12px;padding:12px 18px;font-weight:700;cursor:pointer}.toolbar button.secondary{background:#1d4ed8;color:#dbeafe}.toolbar button.ghost{background:#1f2937;color:#e5e7eb}.toolbar button:disabled{opacity:.6;cursor:not-allowed}' +
   '#status{display:none;margin-top:16px;padding:14px 16px;border-radius:12px}.status-ok{background:#14532d;color:#dcfce7}.status-err{background:#7f1d1d;color:#fee2e2}.status-loading{background:#1f2937;color:#cbd5e1}' +
   '.empty,.unknowns,.warning,.issues{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;margin-top:16px}.unknown{padding:12px;background:#3f1d1d;border-radius:12px;margin-top:8px;color:#fecaca}.warning{background:#422006;border-color:#92400e;color:#fde68a}.issues{background:#422006;border-color:#92400e;color:#fde68a}' +
@@ -1151,9 +1631,9 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
   (unknownCards ? '<div class="unknowns"><h2>Unknown updates</h2>' + unknownCards + '</div>' : '') +
   '<div id="status"></div></div>' +
   '<script>' +
-    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
+    'const form=document.getElementById("update-form");const status=document.getElementById("status");const operatorInput=document.getElementById("operator");const operatorTokenInput=document.getElementById("operator-token");const submitButtons=[...document.querySelectorAll(\\'button[type="submit"]\\')];' +
     'document.getElementById("toggle-btn")?.addEventListener("click",()=>{document.querySelectorAll(\\'input[name="services"]\\').forEach((box)=>{box.checked=!box.checked;});});' +
-    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
+    'form?.addEventListener("submit",async(event)=>{event.preventDefault();const services=[...document.querySelectorAll(\\'input[name="services"]:checked\\')].map((input)=>input.value);const dryRun=event.submitter?.dataset.mode==="dry-run";const operator=operatorInput?.value||"";const operatorToken=operatorTokenInput?.value||"";if(!operator){window.alert("Neni nastaven operator.");return;}if(!services.length){window.alert("Vyber aspon jednu sluzbu.");return;}submitButtons.forEach((button)=>{button.disabled=true;});status.style.display="block";status.className="status-loading";status.textContent=dryRun?"Spoustim dry-run bez zmen...":"Spoustim update...";try{const response=await fetch("' + escapeHtml(data.runUrl) + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({services,dryRun,operator,operatorToken})});const payload=await response.json();status.className=payload.ok?"status-ok":"status-err";status.textContent=payload.message || (payload.ok?(dryRun?"Dry-run dokoncen.":"Update dokoncen."):(dryRun?"Dry-run selhal.":"Update selhal."));}catch(error){status.className="status-err";status.textContent="Chyba spojeni: "+error.message;}finally{submitButtons.forEach((button)=>{button.disabled=false;});}});' +
   '</script></body></html>';
 
 return [{ json: { html } }];

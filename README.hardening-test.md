@@ -54,7 +54,7 @@ Hardening test vetev se ted generuje ve dvou vrstvach:
 - `config.local.json` nově nese i `mailFrom` a `smtpCredentialName` pro technicky mailbox pres SMTP
 - `checkerHeartbeatUrl` v `config.local.json` je nastaveny na self-hosted `Healthchecks`
 - `checkerHeartbeatHeaders` v `config.local.json` doplnuji `Host` header, protoze verejna ping URL je za Authelii a primo by nefungovala
-- `operators` z `config.local.json` ted slouzi i pro UI/operator context a audit log
+- `operators` z `config.local.json` ted slouzi i pro UI/operator context, token/header auth a audit log
 - renderovane soubory `workflow-hardening-test-*.rendered.json` se generuji lokalne a ty se importuji do n8n
 
 Zakladni postup:
@@ -85,6 +85,7 @@ Validation testy `Run` webhooku:
 - rozbity JSON vraci `422 Unprocessable Entity` z parseru n8n
 - validni dry-run vraci `200 OK`
 - validni dry-run po nasazeni `1.4` vraci i `operator` a `workflowExecutionId`
+- `1.2` repo-first uz umi vynutit explicitni `operator` a volitelne ho overit trusted hlavickou nebo per-operator tokenem
 - validni dry-run po nasazeni `1.4` zapisuje jeden JSONL radek do host `audit.jsonl`
 - scheduled hardening checker heartbeatne `Healthchecks` check `n8n-docker-updates-checker` pres interni docker URL + `Host` header
 
@@ -115,6 +116,7 @@ Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
 - `Healthchecks` check musi mit prirazeny alespon jeden notification channel; bez toho se down stav jen zobrazi v UI, ale nic se neposle
 - `1.1` SMTP je repo-first rozpracovane, ale bez realneho `ops-smtp` credentialu a technicke schranky zatim neni nasazene do n8n
+- `1.2` auth vrstva je repo-first pripravljena, ale bez doplneni `operatorIdentityHeader` nebo `operators[].token` v lokalnim configu zatim bezi jen allow-list operatoru
 
 ## Jak to dal udrzovat
 

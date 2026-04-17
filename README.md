@@ -56,6 +56,7 @@ Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a a
   - `mailTo`
   - `mailFrom`
   - `checkerHeartbeatUrl`
+  - `operatorIdentityHeader`
   - `uiPath`
   - `runPath`
   - `operators`
@@ -138,7 +139,9 @@ Doporucene nastaveni credentialu v n8n:
 - `Run` workflow predava host skriptu `operator`, `workflowExecutionId` a `auditLogPath`.
 - Scheduler checker umi na konci workflow poslat watchdog heartbeat na `meta.checkerHeartbeatUrl`, ale jen kdyz je lokalne nastaveny a checker bezi v schedule modu.
 - Checker i result workflow posilaji mail pres `Send Email` (`SMTP`), ne pres `Gmail`.
-- Dokud neni hotovy bod `1.2`, UI bez explicitni volby operatora pouzije prvni hodnotu z `config.local.json`.
+- `Run` workflow uz nefallbackuje na prvniho operatora. `operator` je povinny vzdy.
+- `1.2` repo-first umi dve identity vrstvy: trusted header pres `meta.operatorIdentityHeader`, nebo per-operator token pres `meta.operators[].token`.
+- `meta.operators` muze byt bud jednoduchy seznam jmen, nebo pole objektu `{ id, label, token, identities[] }`.
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
 
