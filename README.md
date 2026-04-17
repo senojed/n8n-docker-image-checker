@@ -53,6 +53,7 @@ Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a a
 - `config.local.json` je gitignored a drzi lokalni hodnoty jako:
   - `baseUrl`
   - `mailTo`
+  - `checkerHeartbeatUrl`
   - `uiPath`
   - `runPath`
   - `operators`
@@ -129,9 +130,28 @@ Doporucene nastaveni credentialu v n8n:
 - HTML stranka pouziva absolutni URL, ne relativni, aby fungovala i v novejsim n8n sandboxu.
 - AI review je doporuceni, ne matematicka garance. Krome AI se pouziva i konzervativni baseline podle typu sluzby.
 - `Run` workflow predava host skriptu `operator`, `workflowExecutionId` a `auditLogPath`.
+- Scheduler checker umi na konci workflow poslat watchdog heartbeat na `meta.checkerHeartbeatUrl`, ale jen kdyz je lokalne nastaveny a checker bezi v schedule modu.
 - Dokud neni hotovy bod `1.1`, UI bez explicitni volby operatora pouzije prvni hodnotu z `config.local.json`.
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
+
+## Externi watchdog
+
+Pro `1.7` se heartbeat URL drzi jen v `config.local.json`:
+
+```json
+{
+  "defaults": {
+    "meta": {
+      "checkerHeartbeatUrl": "https://healthchecks.example/ping/..."
+    }
+  }
+}
+```
+
+- heartbeat node se vyrenderuje jen pro scheduled checker
+- manual-only hardening test checker heartbeat neumyslne neposila
+- externi sluzbu nastav na cron `30 6 * * *` a grace period `30 min`
 
 ## Nasazeni na host
 

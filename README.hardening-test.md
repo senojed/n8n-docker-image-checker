@@ -4,7 +4,7 @@ Tento dokument drzi aktualni stav oddelene hardening test varianty vedle live wo
 
 ## Aktualni faze
 
-Jsme ve `Phase 1 / functional verification + secrets hygiene + audit trail deployed`.
+Jsme ve `Phase 1 / functional verification + secrets hygiene + audit trail deployed + watchdog wiring`.
 
 To prakticky znamena:
 
@@ -14,6 +14,7 @@ To prakticky znamena:
 - test `Run` workflow ted vraci i korektni `400` JSON chyby pro logicky neplatne requesty
 - repo ted drzi jen template workflow JSONy bez lokalnich URL, mailu a path tokenu
 - append-only audit trail do `/var/log/docker-updates/audit.jsonl` je nasazeny i na test hostu
+- generator je pripraveny i na `1.7` heartbeat, ale manual-only hardening checker ho zamerne neposila
 
 ## Nasazena test varianta
 
@@ -47,6 +48,7 @@ Hardening test vetev se ted generuje ve dvou vrstvach:
 
 - repo drzi jen template artefakty bez lokalnich tokenu a URL
 - `config.local.json` je gitignored a nese `baseUrl`, `mailTo`, `uiPath`, `runPath`, `sshHost` a dalsi lokalni hodnoty
+- volitelny `checkerHeartbeatUrl` v `config.local.json` aktivuje externi watchdog jen pro scheduled checker
 - `operators` z `config.local.json` ted slouzi i pro UI/operator context a audit log
 - renderovane soubory `workflow-hardening-test-*.rendered.json` se generuji lokalne a ty se importuji do n8n
 
@@ -104,6 +106,7 @@ Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 - to je oddeleny problem live sady, do hardening test varianty jsem kvuli tomu nesahal
 - na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
+- `1.7` watchdog je zatim jen repo wiring; realny alert zacne fungovat az po doplneni lokalniho `checkerHeartbeatUrl` a az bude finalni checker bezet na schedule
 
 ## Jak to dal udrzovat
 
@@ -124,3 +127,4 @@ Pri dalsi zmene hardening test varianty aktualizovat:
 - dodelana separace template vs rendered workflow artefaktu a lokalni konfigurace
 - nasazen audit log mimo n8n executions na test host vcetne operator contextu
 - opravena code-node quoting chyba v test `Run` workflowu po deployi `1.4`
+- pripraven generator checker heartbeat node pro externi watchdog bez commitnute heartbeat URL

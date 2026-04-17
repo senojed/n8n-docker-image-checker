@@ -150,6 +150,7 @@ Hodnoty se pak vypíšou do `__RESULT_JSON__` (bod 1.3) a slouží jako vstup pr
 1. Na konci workflow A přidat HTTP Request node, který zavolá externí heartbeat URL (healthchecks.io / self-hosted Uptime Kuma / vlastní cron-watcher). Volba providera je agnostická.
 2. Heartbeat je nakonfigurovaný na cron `30 6 * * *` s grace period 30 min.
 3. Pokud heartbeat nedorazí do 07:00, služba pošle alert na stejný technický mailbox jako bod 1.1.
+4. Heartbeat URL držet jen v `config.local.json` jako lokální `meta.checkerHeartbeatUrl`, ne v tracked JSON artefaktech.
 
 **Hotovo když:**
 - Zastavení n8n v 06:00 produkuje alert mail do 07:00.

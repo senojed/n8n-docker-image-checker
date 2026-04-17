@@ -9,6 +9,7 @@ const defaultLocalConfigPath = path.join(__dirname, 'config.local.json');
 const templateMetaPlaceholders = {
   baseUrl: '__BASE_URL__',
   mailTo: '__MAIL_TO__',
+  checkerHeartbeatUrl: '__CHECKER_HEARTBEAT_URL__',
   uiPath: '__UI_PATH__',
   runPath: '__RUN_PATH__',
   operators: ['__OPERATOR__'],
@@ -179,6 +180,8 @@ const artifactNames = meta.artifactNames || {
   run: 'workflow-C-run.json',
 };
 const checkerTriggerMode = meta.checkerTriggerMode === 'manual' ? 'manual' : 'schedule';
+const checkerHeartbeatUrl = isUnsetLocalValue(meta.checkerHeartbeatUrl) ? null : meta.checkerHeartbeatUrl;
+const checkerHeartbeatEnabled = checkerTriggerMode === 'schedule' && Boolean(checkerHeartbeatUrl);
 const uiHeading = meta.uiHeading || workflowNames.ui;
 const mailHeading = meta.mailHeading || `Docker updates - ${meta.variantName || 'Codex'}`;
 
@@ -467,6 +470,7 @@ function buildPreparedCatalog() {
     baseUrl: META.baseUrl,
     uiUrl: META.baseUrl + '/webhook/' + META.uiPath,
     runUrl: META.baseUrl + '/webhook/' + META.runPath,
+    checkerHeartbeatUrl: META.checkerHeartbeatUrl || null,
     updates,
     unknownUpdates: [],
     inspectionIssues: [],
@@ -1295,113 +1299,148 @@ function checkerTriggerNode() {
   };
 }
 
+function checkerHeartbeatNode() {
+  return {
+    id: 'http-heartbeat-1',
+    name: 'Send Watchdog Heartbeat',
+    type: 'n8n-nodes-base.httpRequest',
+    typeVersion: 4.2,
+    position: [2220, 300],
+    parameters: {
+      method: 'GET',
+      url: '={{ $json.checkerHeartbeatUrl }}',
+      options: {},
+    },
+  };
+}
+
 const checkerTrigger = checkerTriggerNode();
+const checkerNodes = [
+  checkerTrigger,
+  {
+    id: 'code-1',
+    name: 'Prepare Services',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: [460, 300],
+    parameters: {
+      jsCode: checkerPrepareCode,
+    },
+  },
+  {
+    id: 'code-version-1',
+    name: 'Build Version Query',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: [680, 300],
+    parameters: {
+      jsCode: versionQueryCode,
+    },
+  },
+  sshNode('SSH Inspect Versions', 'ssh-version-1', [900, 300], '={{ $json.inspectSshCommand }}'),
+  {
+    id: 'code-version-2',
+    name: 'Enrich Updates',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: [1120, 300],
+    parameters: {
+      jsCode: versionMergeCode,
+    },
+  },
+  openAiNode('OpenAI AI Review', 'openai-1', [1340, 300]),
+  {
+    id: 'code-2',
+    name: 'Build Mail',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: [1560, 300],
+    parameters: {
+      jsCode: checkerRenderCode,
+    },
+  },
+  {
+    id: 'if-1',
+    name: 'Anything to Notify?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 1,
+    position: [1780, 300],
+    parameters: {
+      conditions: {
+        number: [
+          {
+            value1: '={{ $json.notifyCount }}',
+            operation: 'larger',
+            value2: 0,
+          },
+        ],
+      },
+    },
+  },
+  {
+    id: 'gmail-1',
+    name: 'Send Mail',
+    type: 'n8n-nodes-base.gmail',
+    typeVersion: 2.1,
+    position: [2000, 220],
+    parameters: {
+      sendTo: meta.mailTo,
+      subject: '={{ $json.subject }}',
+      emailType: 'html',
+      message: '={{ $json.html }}',
+      options: {},
+    },
+  },
+];
+
+if (checkerHeartbeatEnabled) {
+  checkerNodes.push(checkerHeartbeatNode());
+}
+
+const checkerConnections = {
+  [checkerTrigger.name]: {
+    main: [[{ node: 'Prepare Services', type: 'main', index: 0 }]],
+  },
+  'Prepare Services': {
+    main: [[{ node: 'Build Version Query', type: 'main', index: 0 }]],
+  },
+  'Build Version Query': {
+    main: [[{ node: 'SSH Inspect Versions', type: 'main', index: 0 }]],
+  },
+  'SSH Inspect Versions': {
+    main: [[{ node: 'Enrich Updates', type: 'main', index: 0 }]],
+  },
+  'Enrich Updates': {
+    main: [[{ node: 'OpenAI AI Review', type: 'main', index: 0 }]],
+  },
+  'OpenAI AI Review': {
+    main: [[{ node: 'Build Mail', type: 'main', index: 0 }]],
+  },
+  'Build Mail': {
+    main: [[{ node: 'Anything to Notify?', type: 'main', index: 0 }]],
+  },
+  'Anything to Notify?': checkerHeartbeatEnabled
+    ? {
+        main: [
+          [{ node: 'Send Mail', type: 'main', index: 0 }],
+          [{ node: 'Send Watchdog Heartbeat', type: 'main', index: 0 }],
+        ],
+      }
+    : {
+        main: [[{ node: 'Send Mail', type: 'main', index: 0 }], []],
+      },
+};
+
+if (checkerHeartbeatEnabled) {
+  checkerConnections['Send Mail'] = {
+    main: [[{ node: 'Send Watchdog Heartbeat', type: 'main', index: 0 }]],
+  };
+}
 
 const checkerWorkflow = {
   name: workflowNames.checker,
-  nodes: [
-    checkerTrigger,
-    {
-      id: 'code-1',
-      name: 'Prepare Services',
-      type: 'n8n-nodes-base.code',
-      typeVersion: 2,
-      position: [460, 300],
-      parameters: {
-        jsCode: checkerPrepareCode,
-      },
-    },
-    {
-      id: 'code-version-1',
-      name: 'Build Version Query',
-      type: 'n8n-nodes-base.code',
-      typeVersion: 2,
-      position: [680, 300],
-      parameters: {
-        jsCode: versionQueryCode,
-      },
-    },
-    sshNode('SSH Inspect Versions', 'ssh-version-1', [900, 300], '={{ $json.inspectSshCommand }}'),
-    {
-      id: 'code-version-2',
-      name: 'Enrich Updates',
-      type: 'n8n-nodes-base.code',
-      typeVersion: 2,
-      position: [1120, 300],
-      parameters: {
-        jsCode: versionMergeCode,
-      },
-    },
-    openAiNode('OpenAI AI Review', 'openai-1', [1340, 300]),
-    {
-      id: 'code-2',
-      name: 'Build Mail',
-      type: 'n8n-nodes-base.code',
-      typeVersion: 2,
-      position: [1560, 300],
-      parameters: {
-        jsCode: checkerRenderCode,
-      },
-    },
-    {
-      id: 'if-1',
-      name: 'Anything to Notify?',
-      type: 'n8n-nodes-base.if',
-      typeVersion: 1,
-      position: [1780, 300],
-      parameters: {
-        conditions: {
-          number: [
-            {
-              value1: '={{ $json.notifyCount }}',
-              operation: 'larger',
-              value2: 0,
-            },
-          ],
-        },
-      },
-    },
-    {
-      id: 'gmail-1',
-      name: 'Send Mail',
-      type: 'n8n-nodes-base.gmail',
-      typeVersion: 2.1,
-      position: [2000, 220],
-      parameters: {
-        sendTo: meta.mailTo,
-        subject: '={{ $json.subject }}',
-        emailType: 'html',
-        message: '={{ $json.html }}',
-        options: {},
-      },
-    },
-  ],
-  connections: {
-    [checkerTrigger.name]: {
-      main: [[{ node: 'Prepare Services', type: 'main', index: 0 }]],
-    },
-    'Prepare Services': {
-      main: [[{ node: 'Build Version Query', type: 'main', index: 0 }]],
-    },
-    'Build Version Query': {
-      main: [[{ node: 'SSH Inspect Versions', type: 'main', index: 0 }]],
-    },
-    'SSH Inspect Versions': {
-      main: [[{ node: 'Enrich Updates', type: 'main', index: 0 }]],
-    },
-    'Enrich Updates': {
-      main: [[{ node: 'OpenAI AI Review', type: 'main', index: 0 }]],
-    },
-    'OpenAI AI Review': {
-      main: [[{ node: 'Build Mail', type: 'main', index: 0 }]],
-    },
-    'Build Mail': {
-      main: [[{ node: 'Anything to Notify?', type: 'main', index: 0 }]],
-    },
-    'Anything to Notify?': {
-      main: [[{ node: 'Send Mail', type: 'main', index: 0 }], []],
-    },
-  },
+  nodes: checkerNodes,
+  connections: checkerConnections,
   settings: { executionOrder: 'v1' },
 };
 
