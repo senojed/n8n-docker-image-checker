@@ -46,6 +46,6 @@ Puvodni varianta byla rychla na postaveni, ale prilis duverovala tomu, co prijde
 
 - nastavit `SSH` credential
 - priradit `OpenAI` credential
-- priradit `Gmail` credential
+- priradit `SMTP` credential `ops-smtp`
 
 To je vse. Zbytek bude pripraveny v tehle slozce.

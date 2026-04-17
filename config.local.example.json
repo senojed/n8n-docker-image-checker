@@ -3,6 +3,7 @@
     "meta": {
       "baseUrl": "__BASE_URL__",
       "mailTo": "__MAIL_TO__",
+      "mailFrom": "__MAIL_FROM__",
       "checkerHeartbeatUrl": "__CHECKER_HEARTBEAT_URL__",
       "checkerHeartbeatHeaders": {
         "Host": "__CHECKER_HEARTBEAT_HOST__"
@@ -10,6 +11,7 @@
       "operators": [
         "__OPERATOR__"
       ],
+      "smtpCredentialName": "__SMTP_CREDENTIAL_NAME__",
       "sshCredentialName": "__SSH_CREDENTIAL_NAME__",
       "sshHost": "__SSH_HOST__"
     }

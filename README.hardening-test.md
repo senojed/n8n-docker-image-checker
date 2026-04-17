@@ -51,6 +51,7 @@ Hardening test vetev se ted generuje ve dvou vrstvach:
 
 - repo drzi jen template artefakty bez lokalnich tokenu a URL
 - `config.local.json` je gitignored a nese `baseUrl`, `mailTo`, `uiPath`, `runPath`, `sshHost` a dalsi lokalni hodnoty
+- `config.local.json` nově nese i `mailFrom` a `smtpCredentialName` pro technicky mailbox pres SMTP
 - `checkerHeartbeatUrl` v `config.local.json` je nastaveny na self-hosted `Healthchecks`
 - `checkerHeartbeatHeaders` v `config.local.json` doplnuji `Host` header, protoze verejna ping URL je za Authelii a primo by nefungovala
 - `operators` z `config.local.json` ted slouzi i pro UI/operator context a audit log
@@ -102,6 +103,7 @@ Failure-path test:
 - vratit vysledek zpet do UI jako JSON
 - poslat vysledkovy mail po realnem updatu
 - odmitnout logicky neplatne requesty bez spousteni host skriptu
+- byt pripraveny na prechod z Gmail OAuth na `SMTP` credential `ops-smtp`
 
 ## Co jeste neni uzavrene
 
@@ -112,6 +114,7 @@ Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 - na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
 - `Healthchecks` check musi mit prirazeny alespon jeden notification channel; bez toho se down stav jen zobrazi v UI, ale nic se neposle
+- `1.1` SMTP je repo-first rozpracovane, ale bez realneho `ops-smtp` credentialu a technicke schranky zatim neni nasazene do n8n
 
 ## Jak to dal udrzovat
 

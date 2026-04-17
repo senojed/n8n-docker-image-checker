@@ -54,10 +54,12 @@ Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a a
 - `config.local.json` je gitignored a drzi lokalni hodnoty jako:
   - `baseUrl`
   - `mailTo`
+  - `mailFrom`
   - `checkerHeartbeatUrl`
   - `uiPath`
   - `runPath`
   - `operators`
+  - `smtpCredentialName`
   - `sshCredentialName`
   - `sshHost`
 - `service-map.json` drzi bezpecne sdilena runtime metadata jako `auditLogPath`
@@ -81,9 +83,12 @@ Bez `config.local.json` generator pro rendered vystup skonci chybou. To je zamer
 
 ## Co bude potreba v n8n
 
-- `Gmail` credential - uz mas.
-- `OpenAI` credential - uz mas.
-- `SSH` credential - to pak nastavime spolu.
+- `SMTP` credential, doporucene jmeno `ops-smtp`
+- `OpenAI` credential
+- `SSH` credential
+
+Mail ma jit z technicke schranky pres SMTP, ne z osobniho Gmail OAuth.
+Odesilatel se bere z `config.local.json` jako `mailFrom`.
 
 Do n8n se maji importovat renderovane soubory `workflow-*.rendered.json`, ne template `workflow-*.json`.
 
@@ -132,7 +137,8 @@ Doporucene nastaveni credentialu v n8n:
 - AI review je doporuceni, ne matematicka garance. Krome AI se pouziva i konzervativni baseline podle typu sluzby.
 - `Run` workflow predava host skriptu `operator`, `workflowExecutionId` a `auditLogPath`.
 - Scheduler checker umi na konci workflow poslat watchdog heartbeat na `meta.checkerHeartbeatUrl`, ale jen kdyz je lokalne nastaveny a checker bezi v schedule modu.
-- Dokud neni hotovy bod `1.1`, UI bez explicitni volby operatora pouzije prvni hodnotu z `config.local.json`.
+- Checker i result workflow posilaji mail pres `Send Email` (`SMTP`), ne pres `Gmail`.
+- Dokud neni hotovy bod `1.2`, UI bez explicitni volby operatora pouzije prvni hodnotu z `config.local.json`.
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
 
@@ -195,7 +201,7 @@ Dalsi kroky:
 5. V n8n importuj renderovane workflow JSONy.
 6. Doplni se `SSH` credential do node `SSH`.
 7. Doplni se `OpenAI` credential do node `OpenAI AI Review`.
-8. Doplni se `Gmail` credential do Gmail nodu.
+8. Doplni se `SMTP` credential `ops-smtp` do mail node `Send Email`.
 9. Workflowy se publikujou.
 
 ## Poznamka k AI review

@@ -9,10 +9,12 @@ const defaultLocalConfigPath = path.join(__dirname, 'config.local.json');
 const templateMetaPlaceholders = {
   baseUrl: '__BASE_URL__',
   mailTo: '__MAIL_TO__',
+  mailFrom: '__MAIL_FROM__',
   checkerHeartbeatUrl: '__CHECKER_HEARTBEAT_URL__',
   uiPath: '__UI_PATH__',
   runPath: '__RUN_PATH__',
   operators: ['__OPERATOR__'],
+  smtpCredentialName: '__SMTP_CREDENTIAL_NAME__',
   sshCredentialName: '__SSH_CREDENTIAL_NAME__',
   sshHost: '__SSH_HOST__',
 };
@@ -141,7 +143,16 @@ function buildTemplateConfig(config) {
 }
 
 function validateRenderedConfig(config, configPath) {
-  const requiredMetaKeys = ['baseUrl', 'mailTo', 'uiPath', 'runPath', 'sshCredentialName', 'sshHost'];
+  const requiredMetaKeys = [
+    'baseUrl',
+    'mailTo',
+    'mailFrom',
+    'uiPath',
+    'runPath',
+    'smtpCredentialName',
+    'sshCredentialName',
+    'sshHost',
+  ];
   const missingKeys = requiredMetaKeys.filter((key) => isUnsetLocalValue(config.meta?.[key]));
   const operators = Array.isArray(config.meta?.operators)
     ? config.meta.operators.filter((operator) => !isUnsetLocalValue(operator))
@@ -1286,6 +1297,28 @@ function sshNode(name, id, position, command) {
   };
 }
 
+function emailSendNode(name, id, position, subject, html) {
+  return {
+    id,
+    name,
+    type: 'n8n-nodes-base.emailSend',
+    typeVersion: 2.1,
+    position,
+    parameters: {
+      resource: 'email',
+      operation: 'send',
+      fromEmail: meta.mailFrom,
+      toEmail: meta.mailTo,
+      subject,
+      emailFormat: 'html',
+      html,
+      options: {
+        appendAttribution: false,
+      },
+    },
+  };
+}
+
 function checkerTriggerNode() {
   if (checkerTriggerMode === 'manual') {
     return {
@@ -1409,20 +1442,7 @@ const checkerNodes = [
       },
     },
   },
-  {
-    id: 'gmail-1',
-    name: 'Send Mail',
-    type: 'n8n-nodes-base.gmail',
-    typeVersion: 2.1,
-    position: [2000, 220],
-    parameters: {
-      sendTo: meta.mailTo,
-      subject: '={{ $json.subject }}',
-      emailType: 'html',
-      message: '={{ $json.html }}',
-      options: {},
-    },
-  },
+  emailSendNode('Send Mail', 'email-1', [2000, 220], '={{ $json.subject }}', '={{ $json.html }}'),
 ];
 
 if (checkerHeartbeatEnabled) {
@@ -1671,20 +1691,13 @@ const runWorkflow = {
         },
       },
     },
-    {
-      id: 'gmail-run',
-      name: 'Send Result Mail',
-      type: 'n8n-nodes-base.gmail',
-      typeVersion: 2.1,
-      position: [1560, 340],
-      parameters: {
-        sendTo: meta.mailTo,
-        subject: '={{ `${$json.dryRun ? ($json.ok ? "DRY-RUN OK" : "DRY-RUN FAIL") : ($json.ok ? "OK" : "FAIL")} Docker update: ${$json.labels.join(", ")}` }}',
-        emailType: 'html',
-        message: '={{ $json.mailHtml }}',
-        options: {},
-      },
-    },
+    emailSendNode(
+      'Send Result Mail',
+      'email-run',
+      [1560, 340],
+      '={{ `${$json.dryRun ? ($json.ok ? "DRY-RUN OK" : "DRY-RUN FAIL") : ($json.ok ? "OK" : "FAIL")} Docker update: ${$json.labels.join(", ")}` }}',
+      '={{ $json.mailHtml }}',
+    ),
   ],
   connections: {
     'Webhook Run': {

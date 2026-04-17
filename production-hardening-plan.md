@@ -14,9 +14,12 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 
 **Problém:** Kritická automatizace visí na osobním Gmail OAuth tokenu. Už jednou spadl na `invalid_grant`. U zákazníka to není obhajitelné.
 
+**Stav 2026-04-17:** Repo-first část je hotová. Generátor i workflow JSONy už používají `n8n-nodes-base.emailSend` (`SMTP`) a zbývá jen provozní nasazení technického mailboxu a credentialu `ops-smtp` v n8n.
+
 **Změnit v:**
-- [workflow-A-checker.json](workflow-A-checker.json), node `Send Mail` (typ `n8n-nodes-base.gmail`)
-- [workflow-C-run.json](workflow-C-run.json), node `Send Result Mail` (typ `n8n-nodes-base.gmail`)
+- [generate-workflows.mjs](generate-workflows.mjs)
+- [workflow-A-checker.json](workflow-A-checker.json), node `Send Mail` (typ `n8n-nodes-base.emailSend`)
+- [workflow-C-run.json](workflow-C-run.json), node `Send Result Mail` (typ `n8n-nodes-base.emailSend`)
 
 **Konkrétně:** Vyměnit oba Gmail nody za `n8n-nodes-base.emailSend` (SMTP). V n8n založit credential `ops-smtp` s údaji technického mailboxu (např. `ops@customer.tld`). Volby providera: zákazníkův vlastní SMTP relay, Mailgun, Postmark, Resend, Microsoft 365 SMTP — pro plán agnostické, rozhodne se při nasazení.
 
