@@ -4,6 +4,9 @@
       "baseUrl": "__BASE_URL__",
       "mailTo": "__MAIL_TO__",
       "checkerHeartbeatUrl": "__CHECKER_HEARTBEAT_URL__",
+      "checkerHeartbeatHeaders": {
+        "Host": "__CHECKER_HEARTBEAT_HOST__"
+      },
       "operators": [
         "__OPERATOR__"
       ],

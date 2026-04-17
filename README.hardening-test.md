@@ -2,9 +2,12 @@
 
 Tento dokument drzi aktualni stav oddelene hardening test varianty vedle live workflowu.
 
+Aktualni smer projektu je `hardened-only`.
+Live `Codex` checker je povazovany za deprecated a nema se dal rozvijet.
+
 ## Aktualni faze
 
-Jsme ve `Phase 1 / functional verification + secrets hygiene + audit trail deployed + watchdog wiring`.
+Jsme ve `Phase 1 / functional verification + secrets hygiene + audit trail deployed + watchdog live`.
 
 To prakticky znamena:
 
@@ -14,7 +17,7 @@ To prakticky znamena:
 - test `Run` workflow ted vraci i korektni `400` JSON chyby pro logicky neplatne requesty
 - repo ted drzi jen template workflow JSONy bez lokalnich URL, mailu a path tokenu
 - append-only audit trail do `/var/log/docker-updates/audit.jsonl` je nasazeny i na test hostu
-- generator je pripraveny i na `1.7` heartbeat, ale manual-only hardening checker ho zamerne neposila
+- hardening checker je pripraveny na schedule + heartbeat do externiho `Healthchecks`
 
 ## Nasazena test varianta
 
@@ -29,7 +32,7 @@ Oddeleni od live:
 - UI webhook path je lokalni hodnota z `config.local.json`
 - Run webhook path je lokalni hodnota z `config.local.json`
 - host script path: `/opt/docker/docker-update-apply.phase1.sh`
-- checker trigger mode: `manual-only`
+- checker trigger mode: `schedule` (`30 6 * * *`)
 
 Repo artefakty:
 
@@ -48,7 +51,8 @@ Hardening test vetev se ted generuje ve dvou vrstvach:
 
 - repo drzi jen template artefakty bez lokalnich tokenu a URL
 - `config.local.json` je gitignored a nese `baseUrl`, `mailTo`, `uiPath`, `runPath`, `sshHost` a dalsi lokalni hodnoty
-- volitelny `checkerHeartbeatUrl` v `config.local.json` aktivuje externi watchdog jen pro scheduled checker
+- `checkerHeartbeatUrl` v `config.local.json` je nastaveny na self-hosted `Healthchecks`
+- `checkerHeartbeatHeaders` v `config.local.json` doplnuji `Host` header, protoze verejna ping URL je za Authelii a primo by nefungovala
 - `operators` z `config.local.json` ted slouzi i pro UI/operator context a audit log
 - renderovane soubory `workflow-hardening-test-*.rendered.json` se generuji lokalne a ty se importuji do n8n
 
@@ -81,6 +85,7 @@ Validation testy `Run` webhooku:
 - validni dry-run vraci `200 OK`
 - validni dry-run po nasazeni `1.4` vraci i `operator` a `workflowExecutionId`
 - validni dry-run po nasazeni `1.4` zapisuje jeden JSONL radek do host `audit.jsonl`
+- scheduled hardening checker heartbeatne `Healthchecks` check `n8n-docker-updates-checker` pres interni docker URL + `Host` header
 
 Failure-path test:
 
@@ -103,10 +108,10 @@ Failure-path test:
 Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 
 - live `Docker Updates - Checker (Codex)` ma pri aktivaci chybu `object is not iterable`
-- to je oddeleny problem live sady, do hardening test varianty jsem kvuli tomu nesahal
+- to je deprecated live workflow; doporuceny stav je mit ho vypnuty a dal resit jen hardening sadu
 - na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
-- `1.7` watchdog je zatim jen repo wiring; realny alert zacne fungovat az po doplneni lokalniho `checkerHeartbeatUrl` a az bude finalni checker bezet na schedule
+- `Healthchecks` check musi mit prirazeny alespon jeden notification channel; bez toho se down stav jen zobrazi v UI, ale nic se neposle
 
 ## Jak to dal udrzovat
 
@@ -127,4 +132,4 @@ Pri dalsi zmene hardening test varianty aktualizovat:
 - dodelana separace template vs rendered workflow artefaktu a lokalni konfigurace
 - nasazen audit log mimo n8n executions na test host vcetne operator contextu
 - opravena code-node quoting chyba v test `Run` workflowu po deployi `1.4`
-- pripraven generator checker heartbeat node pro externi watchdog bez commitnute heartbeat URL
+- aktivovan heartbeat na self-hosted `Healthchecks` pres lokalni config hardening profilu

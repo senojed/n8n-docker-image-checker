@@ -7,7 +7,7 @@
     "uiSubtitle": "Hardening test varianta oddelena od live workflowu",
     "uiHeading": "Docker Updates - UI (Hardening Test)",
     "mailHeading": "Docker updates - Hardening Test",
-    "checkerTriggerMode": "manual",
+    "checkerTriggerMode": "schedule",
     "workflowNames": {
       "checker": "Docker Updates - Checker (Hardening Test)",
       "ui": "Docker Updates - UI (Hardening Test)",

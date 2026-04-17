@@ -3,6 +3,7 @@
 Tahle slozka obsahuje oddelenou, bezpecnejsi variantu Docker update automatizace pro n8n. Puvodni Claude Code rozpracovani zustava vedle jako reference a neni timhle dotcene.
 
 Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-test.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/README.hardening-test.md:1).
+Aktualni smer projektu je `hardened-only`; puvodni live `Codex` workflowy jsou uz jen legacy reference.
 
 ## Co tato varianta dela
 
@@ -88,7 +89,7 @@ Do n8n se maji importovat renderovane soubory `workflow-*.rendered.json`, ne tem
 
 ## Live vs hardening test
 
-Live homelab workflowy zustavaji:
+Legacy live workflowy:
 
 - `Docker Updates - Checker (Codex)`
 - `Docker Updates - UI (Codex)`
@@ -105,7 +106,7 @@ Oddeleni test varianty:
 - UI webhook path je oddeleny a bere se z `config.local.json`
 - Run webhook path je oddeleny a bere se z `config.local.json`
 - host script path: `/opt/docker/docker-update-apply.phase1.sh`
-- checker je manual-only, bez schedulu
+- checker bezi na schedulu `30 6 * * *`
 
 Generovani test artefaktu:
 
@@ -137,20 +138,25 @@ Doporucene nastaveni credentialu v n8n:
 
 ## Externi watchdog
 
-Pro `1.7` se heartbeat URL drzi jen v `config.local.json`:
+Pro `1.7` se heartbeat nastaveni drzi jen v `config.local.json`:
 
 ```json
 {
   "defaults": {
     "meta": {
-      "checkerHeartbeatUrl": "https://healthchecks.example/ping/..."
+      "checkerHeartbeatUrl": "https://healthchecks.example/ping/...",
+      "checkerHeartbeatHeaders": {
+        "Host": "healthchecks.example"
+      }
     }
   }
 }
 ```
 
 - heartbeat node se vyrenderuje jen pro scheduled checker
-- manual-only hardening test checker heartbeat neumyslne neposila
+- pro hardening profil je mozne drzet samostatny `checkerHeartbeatUrl`, takze zmena watchdog sluzby je jen v lokalnim configu
+- `checkerHeartbeatHeaders` jsou volitelne; hodi se pro self-hosted watchdog za reverzni proxy nebo auth vrstvou
+- na tomhle hostu je verejna `Healthchecks` ping URL za Authelii, takze funkcni varianta je interni docker URL + `Host` header
 - externi sluzbu nastav na cron `30 6 * * *` a grace period `30 min`
 
 ## Nasazeni na host

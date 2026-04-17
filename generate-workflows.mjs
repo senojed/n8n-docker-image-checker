@@ -117,6 +117,23 @@ function isUnsetLocalValue(value) {
   return /^__.+__$/.test(trimmed);
 }
 
+function normalizeHeaderMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([name, headerValue]) =>
+        typeof name === 'string' &&
+        name.trim() &&
+        typeof headerValue === 'string' &&
+        headerValue.trim() &&
+        !isUnsetLocalValue(headerValue),
+    ),
+  );
+}
+
 function buildTemplateConfig(config) {
   return mergeConfig(config, {
     meta: templateMetaPlaceholders,
@@ -181,6 +198,7 @@ const artifactNames = meta.artifactNames || {
 };
 const checkerTriggerMode = meta.checkerTriggerMode === 'manual' ? 'manual' : 'schedule';
 const checkerHeartbeatUrl = isUnsetLocalValue(meta.checkerHeartbeatUrl) ? null : meta.checkerHeartbeatUrl;
+const checkerHeartbeatHeaders = normalizeHeaderMap(meta.checkerHeartbeatHeaders);
 const checkerHeartbeatEnabled = checkerTriggerMode === 'schedule' && Boolean(checkerHeartbeatUrl);
 const uiHeading = meta.uiHeading || workflowNames.ui;
 const mailHeading = meta.mailHeading || `Docker updates - ${meta.variantName || 'Codex'}`;
@@ -1300,17 +1318,31 @@ function checkerTriggerNode() {
 }
 
 function checkerHeartbeatNode() {
+  const parameters = {
+    method: 'GET',
+    url: '={{ $json.checkerHeartbeatUrl }}',
+    options: {},
+  };
+
+  const headerParameters = Object.entries(checkerHeartbeatHeaders).map(([name, value]) => ({
+    name,
+    value,
+  }));
+
+  if (headerParameters.length > 0) {
+    parameters.sendHeaders = true;
+    parameters.headerParameters = {
+      parameters: headerParameters,
+    };
+  }
+
   return {
     id: 'http-heartbeat-1',
     name: 'Send Watchdog Heartbeat',
     type: 'n8n-nodes-base.httpRequest',
     typeVersion: 4.2,
     position: [2220, 300],
-    parameters: {
-      method: 'GET',
-      url: '={{ $json.checkerHeartbeatUrl }}',
-      options: {},
-    },
+    parameters,
   };
 }
 
