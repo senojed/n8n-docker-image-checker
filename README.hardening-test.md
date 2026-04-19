@@ -106,6 +106,35 @@ Failure-path test:
 - odmitnout logicky neplatne requesty bez spousteni host skriptu
 - byt pripraveny na prechod z Gmail OAuth na `SMTP` credential `ops-smtp`
 
+## Provozni poznamka k n8n
+
+V n8n neni manualni test z editoru to same jako scheduled beh.
+
+- editorovy manualni beh muze pouzit draft verzi workflowu
+- scheduler a production webhooky pouzivaji published verzi
+- po zmene node nebo credentials nestaci jen otestovat `Execute workflow`, ale je potreba workflow i publikovat
+
+Prakticky checklist po zmene checkeru:
+
+1. upravit workflow
+2. otestovat manualni beh
+3. workflow publikovat
+4. zkontrolovat, ze zustalo `Active`
+5. dalsi automaticky beh overit i rano na realnem schedulu
+
+Tenhle projekt uz na tom realne narazil:
+
+- manualni beh checkeru byl v poradku
+- scheduled beh bezel ze starsi published verze
+- vysledek byl jiny credential binding nez v editoru
+
+Deploy/publish sanity po zmene workflowu:
+
+- zkontrolovat, ze published verze ma stejne kriticke credentials jako draft
+- u scheduler workflowu overit `versionId == activeVersionId`
+- po publishi ma workflow zustat `Active`
+- u checkeru overit i nejblizsi realny scheduled beh, ne jen manual
+
 ## Co jeste neni uzavrene
 
 Tohle neni blocker pro hardening test variantu, ale zustava otevrene:

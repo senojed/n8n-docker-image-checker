@@ -93,6 +93,34 @@ Odesilatel se bere z `config.local.json` jako `mailFrom`.
 
 Do n8n se maji importovat renderovane soubory `workflow-*.rendered.json`, ne template `workflow-*.json`.
 
+## Draft vs published v n8n
+
+Tohle je dulezite provozni pravidlo:
+
+- rucni spusteni z editoru muze pouzit draft verzi workflowu, kterou zrovna vidis v UI
+- scheduler, production webhooky a aktivni workflow pouzivaji published verzi
+- kdyz upravis node, credentials nebo trigger, ale workflow nepublikujes, rucni test muze projit a automat v produkci muze bezet jinak nebo spadnout
+
+Prakticky checklist po kazde zmene:
+
+1. upravit workflow
+2. rucne otestovat v editoru
+3. workflow publikovat
+4. overit, ze zustalo `Active`
+5. u scheduleru dalsi den overit i realny automaticky beh, ne jen manual
+
+Typicky symptom nepublikovane zmeny:
+
+- manualni beh funguje
+- scheduled beh nebo production webhook pada na starem node configu nebo starych credentials
+
+Deploy/publish sanity po kazde zmene:
+
+- published workflow musi mit stejne kriticke credentials jako draft
+- u scheduleru a production workflow ma platit `versionId == activeVersionId`
+- po publishi ma workflow zustat `Active`
+- u checkeru se ma po nejblizsim automatickem behu overit i realny scheduled execution, ne jen manual
+
 ## Live vs hardening test
 
 Legacy live workflowy:
@@ -206,6 +234,11 @@ Dalsi kroky:
 7. Doplni se `OpenAI` credential do node `OpenAI AI Review`.
 8. Doplni se `SMTP` credential `ops-smtp` do mail node `Send Email`.
 9. Workflowy se publikujou.
+
+Po publishi plati:
+
+- rucni test z editoru je jen kontrola draftu
+- skutecny scheduler a production webhooky se maji povazovat za overene az po behu published verze
 
 ## Poznamka k AI review
 

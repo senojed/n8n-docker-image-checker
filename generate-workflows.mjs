@@ -1833,7 +1833,7 @@ function checkerTriggerNode() {
 function checkerHeartbeatNode() {
   const parameters = {
     method: 'GET',
-    url: '={{ $json.checkerHeartbeatUrl }}',
+    url: checkerHeartbeatUrl,
     options: {},
   };
 
@@ -1856,6 +1856,27 @@ function checkerHeartbeatNode() {
     typeVersion: 4.2,
     position: [2220, 300],
     parameters,
+  };
+}
+
+function checkerProductionExecutionNode() {
+  return {
+    id: 'if-heartbeat-mode-1',
+    name: 'Production Execution?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 1,
+    position: [2220, 300],
+    parameters: {
+      conditions: {
+        boolean: [
+          {
+            value1: '={{ $exec.mode === "production" }}',
+            operation: 'equal',
+            value2: true,
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -1926,6 +1947,7 @@ const checkerNodes = [
 ];
 
 if (checkerHeartbeatEnabled) {
+  checkerNodes.push(checkerProductionExecutionNode());
   checkerNodes.push(checkerHeartbeatNode());
 }
 
@@ -1955,7 +1977,7 @@ const checkerConnections = {
     ? {
         main: [
           [{ node: 'Send Mail', type: 'main', index: 0 }],
-          [{ node: 'Send Watchdog Heartbeat', type: 'main', index: 0 }],
+          [{ node: 'Production Execution?', type: 'main', index: 0 }],
         ],
       }
     : {
@@ -1965,7 +1987,13 @@ const checkerConnections = {
 
 if (checkerHeartbeatEnabled) {
   checkerConnections['Send Mail'] = {
-    main: [[{ node: 'Send Watchdog Heartbeat', type: 'main', index: 0 }]],
+    main: [[{ node: 'Production Execution?', type: 'main', index: 0 }]],
+  };
+  checkerConnections['Production Execution?'] = {
+    main: [
+      [{ node: 'Send Watchdog Heartbeat', type: 'main', index: 0 }],
+      [],
+    ],
   };
 }
 

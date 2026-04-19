@@ -167,6 +167,27 @@ Hodnoty se pak vypíšou do `__RESULT_JSON__` (bod 1.3) a slouží jako vstup pr
 
 Tyto body výrazně snižují riziko, ale nejsou blocker pro první produkční nasazení.
 
+### 2.0 Deploy / publish sanity pro n8n workflowy
+
+**Problém:** U n8n nestačí, že funguje ruční test v editoru. Scheduler a production webhooky jedou z published verze. Když se rozjede divergence mezi draftem, `versionId`, `activeVersionId` nebo credential bindingy v publikované verzi, výsledek je zákeřný: manual prochází, automat padá.
+
+**Změnit v:** dokumentace a deploy postup; volitelně později helper skript v `_work/`.
+
+**Konkrétně:**
+1. Po každé změně workflow udělat ruční test v editoru.
+2. Workflow publikovat.
+3. Ověřit, že workflow zůstalo `Active`.
+4. Ověřit, že published verze opravdu obsahuje správné credentials na kritických nodech (`Send Mail`, `SSH`, `OpenAI`, případně `Send Result Mail`).
+5. Ověřit, že `workflow_entity.versionId == workflow_entity.activeVersionId` u workflowů, které mají běžet po schedulu nebo jako production webhook.
+6. U scheduleru udělat ještě jeden real-world check po nejbližším automatickém běhu.
+
+**Hotovo když:**
+- po deployi není rozdíl mezi draft a published verzí na kritických nodech
+- scheduled checker i production webhooky běží ze stejné verze, kterou jsme právě nasadili
+- nevzniká stav „manual OK, scheduled FAIL" způsobený starou published verzí
+
+---
+
 ### 2.1 Execution lock
 
 **Problém:** Dva souběžné běhy (manuální + scheduled + retry) by mohly pullnout a nahodit službu dvakrát nebo se prát o compose stav.
