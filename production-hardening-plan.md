@@ -209,7 +209,7 @@ flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary"
 
 **Problém:** Update může selhat na plném disku nebo rozbitém compose souboru až po `pull`, kdy už je půlka image stažená.
 
-**Stav 2026-04-19:** Repo-first i hardening host deploy jsou hotové pro `precheck_disk` a `precheck_compose`. Backup marker wiring je v kódu připravené, ale záměrně ještě není zapnuté v konfiguraci, protože bod `2.6` zatím marker negeneruje.
+**Stav 2026-04-19:** Repo-first i hardening host deploy jsou hotové pro `precheck_disk`, `precheck_compose` i marker wiring. Po bodu `2.6` host skript vytváří `.backups/<timestamp>` a aktualizuje `.last-backup`; zapnutí `backupMarkerPath` v n8n configu je pak už jen deploy volba.
 
 **Změnit v:** [docker-update-apply.sh](docker-update-apply.sh), nová sekce před `pull`.
 
@@ -286,6 +286,8 @@ AI verdict se pak *nikdy nesmí* zmírnit pravidlový. Mail ukáže oba verdicty
 ### 2.6 Backup marker a snapshot před updatem
 
 **Problém:** Pre-check (2.2) kontroluje existenci backup markeru, ale nikdo ho nevytváří. Pro minimální produkční rozumnost potřebujeme alespoň snapshot compose souboru a current digestů těsně před updatem.
+
+**Stav 2026-04-19:** Repo-first i hardening host deploy jsou hotové. Host skript před `pull` vytváří `/opt/docker/.backups/<timestamp>/`, zapisuje `prev_digests.json`, `metadata.json`, `docker-compose.rendered.yml`, aktualizuje `.last-backup` a drží retention posledních `30` běhů.
 
 **Změnit v:** [docker-update-apply.sh](docker-update-apply.sh), nová sekce po pre-check, před `pull`.
 

@@ -1796,6 +1796,7 @@ function phaseLabel(phase) {
     dry_run: 'Dry-run',
     complete: 'Dokonceno',
     lock: 'Soubezny beh',
+    backup_snapshot: 'Snapshot pred updatem',
     precheck_disk: 'Kontrola disku',
     precheck_compose: 'Kontrola docker compose',
     precheck_backup: 'Kontrola backupu',
@@ -1822,6 +1823,10 @@ function phaseExplanation(ok, dryRun, phase) {
 
   if (phase === 'lock') {
     return 'Jiny update uz prave bezi, proto se tento pokus bezpecne zastavil.';
+  }
+
+  if (phase === 'backup_snapshot') {
+    return 'Pred samotnym pull se nepodarilo vytvorit compose-level snapshot. Update se proto bezpecne zastavil.';
   }
 
   if (phase === 'precheck_disk' || phase === 'precheck_compose' || phase === 'precheck_backup') {
@@ -1851,6 +1856,8 @@ const actionLabel = dryRun ? 'Dry-run' : 'Update';
 const operator = structuredResult?.operator || requestData.operator || null;
 const workflowExecutionId = structuredResult?.workflow_execution_id || requestData.workflowExecutionId || String($execution.id || '');
 const auditHost = structuredResult?.host || null;
+const backupSnapshotDir = structuredResult?.backup_snapshot_dir || null;
+const backupMarkerPath = structuredResult?.backup_marker_path || requestData.backupMarkerPath || null;
 const servicesText = requestData.labels.join(', ');
 const titleText = ok
   ? (dryRun ? 'Dry-run probehl v poradku' : 'Docker update probehl v poradku')
@@ -1920,6 +1927,8 @@ const metadataHtml = [
   operator ? '<div style="margin:0 0 6px"><strong>Operator:</strong> ' + escapeHtml(operator) + '</div>' : '',
   workflowExecutionId ? '<div style="margin:0 0 6px"><strong>Execution:</strong> ' + escapeHtml(workflowExecutionId) + '</div>' : '',
   auditHost ? '<div style="margin:0 0 6px"><strong>Host:</strong> ' + escapeHtml(auditHost) + '</div>' : '',
+  backupSnapshotDir ? '<div style="margin:0 0 6px"><strong>Snapshot:</strong> ' + escapeHtml(backupSnapshotDir) + '</div>' : '',
+  backupMarkerPath ? '<div style="margin:0 0 6px"><strong>Marker:</strong> ' + escapeHtml(backupMarkerPath) + '</div>' : '',
   summary ? '<div style="margin:0"><strong>Chyba:</strong> ' + escapeHtml(summary) + '</div>' : '',
 ].filter(Boolean).join('');
 
@@ -1953,6 +1962,12 @@ const nextSteps = ok
           ? 'Kdyz problem zpusobil novy image, pouzij rollback runbook niz.'
           : 'Pokud bude potreba navrat, udelej ho rucne po kontrole digestu a logu.',
       ]
+    : phase === 'backup_snapshot'
+      ? [
+          'Zkontroluj, proc nesel vytvorit snapshot compose konfigurace.',
+          'Over zapis do /opt/docker/.backups a .last-backup markeru.',
+          'Po oprave spust novy test.',
+        ]
     : [
         'Otevri execution v n8n a zkontroluj detail chyby.',
         'Podle faze oprav problem a pak spust novy test.',
@@ -1988,6 +2003,8 @@ return [{
     operator,
     workflowExecutionId,
     auditHost,
+    backupSnapshotDir,
+    backupMarkerPath,
     auditLogPath: requestData.auditLogPath || null,
     prevDigests,
     newDigests,
@@ -2441,7 +2458,7 @@ const runWorkflow = {
       position: [1340, 140],
       parameters: {
         respondWith: 'json',
-        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, operator: $json.operator, workflowExecutionId: $json.workflowExecutionId, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
+        responseBody: '={{ JSON.stringify({ ok: $json.ok, dryRun: $json.dryRun, phase: $json.phase, summary: $json.summary, operator: $json.operator, workflowExecutionId: $json.workflowExecutionId, backupSnapshotDir: $json.backupSnapshotDir, backupMarkerPath: $json.backupMarkerPath, floatingTagWarning: $json.floatingTagWarning, floatingServices: $json.floatingServices, message: $json.message, services: $json.services, output: $json.compactOutput }) }}',
         options: {
           responseCode: '={{ $json.statusCode || 200 }}',
         },

@@ -7,6 +7,8 @@ ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
 DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
 DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT=85
 DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS=86400
+DEFAULT_BACKUP_SNAPSHOT_ROOT="${COMPOSE_DIR}/.backups"
+DEFAULT_BACKUP_RETENTION_RUNS=30
 LOCK_FILE_PATH="${COMPOSE_DIR}/.docker-update-apply.lock"
 
 dry_run=0
@@ -21,6 +23,8 @@ services=()
 result_emitted=0
 current_phase="bootstrap"
 host_name="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+backup_snapshot_dir=""
+backup_snapshot_marker_path=""
 
 declare -A allowed=()
 declare -A compose_services=()
@@ -62,6 +66,8 @@ build_result_payload() {
   RESULT_OPERATOR="${operator:-unknown}" \
   RESULT_WORKFLOW_EXECUTION_ID="${workflow_execution_id}" \
   RESULT_HOST="${host_name}" \
+  RESULT_BACKUP_SNAPSHOT_DIR="${backup_snapshot_dir}" \
+  RESULT_BACKUP_MARKER_PATH="${backup_snapshot_marker_path}" \
   SERVICES_PAYLOAD="$(array_payload services)" \
   PREV_DIGESTS_PAYLOAD="$(map_payload prev_digests)" \
   NEW_DIGESTS_PAYLOAD="$(map_payload new_digests)" \
@@ -100,6 +106,8 @@ payload = {
     "operator": os.environ.get("RESULT_OPERATOR") or None,
     "workflow_execution_id": os.environ.get("RESULT_WORKFLOW_EXECUTION_ID") or None,
     "host": os.environ.get("RESULT_HOST") or None,
+    "backup_snapshot_dir": os.environ.get("RESULT_BACKUP_SNAPSHOT_DIR") or None,
+    "backup_marker_path": os.environ.get("RESULT_BACKUP_MARKER_PATH") or None,
 }
 
 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
@@ -138,6 +146,8 @@ entry = {
     "summary": payload.get("summary"),
     "exit_code": payload.get("exit_code"),
     "floating_tag_warning": bool(payload.get("floating_tag_warning")),
+    "backup_snapshot_dir": payload.get("backup_snapshot_dir"),
+    "backup_marker_path": payload.get("backup_marker_path"),
 }
 
 with open(os.environ["AUDIT_LOG_PATH"], "a", encoding="utf-8") as handle:
@@ -300,6 +310,136 @@ run_backup_marker_precheck() {
   if (( marker_age > backup_marker_max_age_seconds )); then
     finish_error "precheck_backup" 13 "backup marker is ${marker_age}s old (limit ${backup_marker_max_age_seconds}s) at ${backup_marker_path}"
   fi
+}
+
+prune_backup_snapshots() {
+  local backup_root_dir="$1"
+  local -a snapshot_dirs=()
+  local prune_count index
+
+  if [[ ! -d "${backup_root_dir}" ]]; then
+    return 0
+  fi
+
+  mapfile -t snapshot_dirs < <(find "${backup_root_dir}" -mindepth 1 -maxdepth 1 -type d -printf '%P\n' | sort)
+  if (( ${#snapshot_dirs[@]} <= DEFAULT_BACKUP_RETENTION_RUNS )); then
+    return 0
+  fi
+
+  prune_count=$(( ${#snapshot_dirs[@]} - DEFAULT_BACKUP_RETENTION_RUNS ))
+  for (( index=0; index<prune_count; index+=1 )); do
+    if ! rm -rf -- "${backup_root_dir}/${snapshot_dirs[$index]}"; then
+      finish_error "backup_snapshot" 15 "failed to prune old backup snapshot ${backup_root_dir}/${snapshot_dirs[$index]}"
+    fi
+  done
+}
+
+create_backup_snapshot() {
+  local backup_root_dir snapshot_stamp snapshot_suffix effective_marker_path
+
+  backup_root_dir="${DEFAULT_BACKUP_SNAPSHOT_ROOT}"
+  snapshot_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  snapshot_suffix="${workflow_execution_id:-$$}"
+  backup_snapshot_dir="${backup_root_dir}/${snapshot_stamp}"
+  if [[ -e "${backup_snapshot_dir}" ]]; then
+    backup_snapshot_dir="${backup_root_dir}/${snapshot_stamp}-${snapshot_suffix}"
+  fi
+
+  effective_marker_path="${backup_marker_path:-${COMPOSE_DIR}/.last-backup}"
+  backup_snapshot_marker_path="${effective_marker_path}"
+
+  if ! mkdir -p "${backup_snapshot_dir}"; then
+    finish_error "backup_snapshot" 15 "failed to create backup snapshot directory at ${backup_snapshot_dir}"
+  fi
+
+  if ! mkdir -p "$(dirname "${effective_marker_path}")"; then
+    finish_error "backup_snapshot" 15 "failed to create backup marker directory at $(dirname "${effective_marker_path}")"
+  fi
+
+  for compose_candidate in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+    if [[ -f "${compose_candidate}" ]]; then
+      if ! cp -p "${compose_candidate}" "${backup_snapshot_dir}/${compose_candidate}"; then
+        finish_error "backup_snapshot" 15 "failed to copy ${compose_candidate} into ${backup_snapshot_dir}"
+      fi
+    fi
+  done
+
+  if ! docker compose config > "${backup_snapshot_dir}/docker-compose.rendered.yml"; then
+    finish_error "backup_snapshot" 15 "docker compose config failed while creating backup snapshot"
+  fi
+
+  SNAPSHOT_DIR="${backup_snapshot_dir}" \
+  BACKUP_MARKER_PATH="${effective_marker_path}" \
+  BACKUP_HOST="${host_name}" \
+  BACKUP_OPERATOR="${operator:-unknown}" \
+  BACKUP_WORKFLOW_EXECUTION_ID="${workflow_execution_id}" \
+  SERVICES_PAYLOAD="$(array_payload services)" \
+  PREV_DIGESTS_PAYLOAD="$(map_payload prev_digests)" \
+  python3 - <<'PY'
+import datetime
+import json
+import os
+from pathlib import Path
+
+
+def lines(name):
+    value = os.environ.get(name, "")
+    if not value:
+        return []
+    return [line for line in value.splitlines() if line.strip()]
+
+
+def key_value_map(name):
+    data = {}
+    for line in lines(name):
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key] = value
+    return data
+
+
+ts = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+snapshot_dir = Path(os.environ["SNAPSHOT_DIR"])
+marker_path = Path(os.environ["BACKUP_MARKER_PATH"])
+services = lines("SERVICES_PAYLOAD")
+prev_digests = key_value_map("PREV_DIGESTS_PAYLOAD")
+
+metadata = {
+    "ts": ts,
+    "host": os.environ.get("BACKUP_HOST") or "unknown",
+    "operator": os.environ.get("BACKUP_OPERATOR") or "unknown",
+    "workflow_execution_id": os.environ.get("BACKUP_WORKFLOW_EXECUTION_ID") or None,
+    "services": services,
+    "prev_digests": prev_digests,
+}
+marker = {
+    "ts": ts,
+    "snapshot_dir": str(snapshot_dir),
+    "services": services,
+    "workflow_execution_id": os.environ.get("BACKUP_WORKFLOW_EXECUTION_ID") or None,
+}
+
+(snapshot_dir / "prev_digests.json").write_text(
+    json.dumps(prev_digests, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+(snapshot_dir / "metadata.json").write_text(
+    json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+marker_path.write_text(
+    json.dumps(marker, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+
+  prune_backup_snapshots "${backup_root_dir}"
+
+  echo "=== Backup Snapshot ==="
+  echo "Snapshot: ${backup_snapshot_dir}"
+  echo "Marker: ${effective_marker_path}"
+  echo
 }
 
 run_post_checks() {
@@ -695,6 +835,9 @@ if [[ ${dry_run} -eq 1 ]]; then
   echo
   finish_success "dry_run" "dry-run completed"
 fi
+
+current_phase="backup_snapshot"
+create_backup_snapshot
 
 echo "=== Docker Update Apply ==="
 echo "Services: ${services[*]}"

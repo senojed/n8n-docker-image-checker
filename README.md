@@ -181,7 +181,8 @@ Doporucene nastaveni credentialu v n8n:
   - `phase: precheck_compose` kdyz neprojde `docker compose config -q`
   - `phase: precheck_backup` jen kdyz je lokalne nastaveny `backupMarkerPath`
 - Disk pre-check ma v host skriptu default `85 %`, takze funguje hned po nasazeni i bez dalsi konfigurace.
-- Backup marker je zamerne opt-in az do bodu `2.6`; bez `backupMarkerPath` se kontrola preskoci.
+- Po bodu `2.6` host skript pri kazdem realnem updatu vytvori compose-level snapshot do `/opt/docker/.backups/<timestamp>/` a aktualizuje marker `/opt/docker/.last-backup`.
+- `backupMarkerPath` je porad opt-in. Dokud neni zapnuty v `config.local.json`, snapshot se sice vytvari, ale `precheck_backup` se preskoci.
 - Po `docker compose up` host skript dela i `post_check` podle `healthCheck` metadata u sluzby.
 - `post_check` umi dva rezimy:
   - `docker`: ceka na `healthy`, pripadne aspon `running`
@@ -228,8 +229,13 @@ Volitelne host pre-check parametry se drzi take v `config.local.json`:
 ```
 
 - `precheckDiskUsageLimitPct` je volitelny override; kdyz neni nastaveny, host skript pouzije vlastni default `85`
+- `backupMarkerPath` doporucena hodnota je `/opt/docker/.last-backup`
 - `backupMarkerPath` je vypnute, dokud neni explicitne nastavene
 - `backupMarkerMaxAgeSeconds` se pouzije jen kdyz je nastavene `backupMarkerPath`
+- po nasazeni `2.6` je prakticky postup:
+  - nechat host skript jednou vytvorit snapshot a `.last-backup`
+  - pak teprve zapnout `backupMarkerPath` v `config.local.json`
+  - od dalsiho behu uz `precheck_backup` hlida stari markeru
 
 ## Post-check konfigurace
 
@@ -279,6 +285,35 @@ docker compose ps <service>
 ```
 
 Tohle vrati puvodni image pod stejny tag, ktery compose pouziva. Po rollbacku je porad potreba rucne zkontrolovat logy a pripadne migrace databaze.
+
+## Backup snapshot pred updatem
+
+Po bodu `2.6` host skript pri kazdem realnem updatu vytvori snapshot do:
+
+```text
+/opt/docker/.backups/<timestamp>/
+```
+
+Uvnitri jsou minimalne:
+
+- puvodni compose soubory (`docker-compose.yml`, `compose.yml`, pokud existuji)
+- `docker-compose.rendered.yml` z `docker compose config`
+- `prev_digests.json`
+- `metadata.json`
+
+Zaroven se aktualizuje marker:
+
+```text
+/opt/docker/.last-backup
+```
+
+Tenhle marker se pak da pouzit v `precheck_backup`.
+
+Poznamky:
+
+- nejde o volume snapshot, jen o compose-level backup konfigurace a image digestu
+- retention drzi poslednich `30` snapshot adresaru
+- cesta ke snapshotu se vraci i ve structured result JSONu a ve failure/success mailu
 
 ## Nasazeni na host
 
