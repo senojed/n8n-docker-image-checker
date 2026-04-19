@@ -209,6 +209,8 @@ flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary"
 
 **Problém:** Update může selhat na plném disku nebo rozbitém compose souboru až po `pull`, kdy už je půlka image stažená.
 
+**Stav 2026-04-19:** Repo-first i hardening host deploy jsou hotové pro `precheck_disk` a `precheck_compose`. Backup marker wiring je v kódu připravené, ale záměrně ještě není zapnuté v konfiguraci, protože bod `2.6` zatím marker negeneruje.
+
 **Změnit v:** [docker-update-apply.sh](docker-update-apply.sh), nová sekce před `pull`.
 
 **Konkrétně:**

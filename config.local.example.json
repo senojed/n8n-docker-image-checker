@@ -6,6 +6,9 @@
       "mailFrom": "__MAIL_FROM__",
       "checkerHeartbeatUrl": "__CHECKER_HEARTBEAT_URL__",
       "operatorIdentityHeader": "__OPERATOR_IDENTITY_HEADER__",
+      "precheckDiskUsageLimitPct": "__PRECHECK_DISK_USAGE_LIMIT_PCT__",
+      "backupMarkerPath": "__BACKUP_MARKER_PATH__",
+      "backupMarkerMaxAgeSeconds": "__BACKUP_MARKER_MAX_AGE_SECONDS__",
       "checkerHeartbeatHeaders": {
         "Host": "__CHECKER_HEARTBEAT_HOST__"
       },

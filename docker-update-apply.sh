@@ -5,12 +5,17 @@ COMPOSE_DIR="/opt/docker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
 DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
+DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT=85
+DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS=86400
 LOCK_FILE_PATH="${COMPOSE_DIR}/.docker-update-apply.lock"
 
 dry_run=0
 operator=""
 workflow_execution_id=""
 audit_log_path="${DEFAULT_AUDIT_LOG_PATH}"
+precheck_disk_usage_limit_pct="${DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT}"
+backup_marker_path=""
+backup_marker_max_age_seconds="${DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS}"
 services=()
 result_emitted=0
 current_phase="bootstrap"
@@ -228,6 +233,74 @@ acquire_execution_lock() {
   fi
 }
 
+is_non_negative_integer() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+run_disk_precheck() {
+  local docker_root_dir usage_value usage_pct
+
+  if [[ "${precheck_disk_usage_limit_pct}" == "0" ]]; then
+    return 0
+  fi
+
+  docker_root_dir="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null | tr -d '\r')"
+  if [[ -z "${docker_root_dir}" ]]; then
+    finish_error "precheck_disk" 11 "docker info did not return DockerRootDir"
+  fi
+
+  if [[ ! -d "${docker_root_dir}" ]]; then
+    finish_error "precheck_disk" 11 "docker root directory not found at ${docker_root_dir}"
+  fi
+
+  usage_value="$(df -P "${docker_root_dir}" 2>/dev/null | awk 'NR==2 {print $5}')"
+  usage_pct="${usage_value%\%}"
+  if ! is_non_negative_integer "${usage_pct}"; then
+    finish_error "precheck_disk" 11 "failed to read disk usage for ${docker_root_dir}"
+  fi
+
+  if (( usage_pct > precheck_disk_usage_limit_pct )); then
+    finish_error "precheck_disk" 11 "docker storage usage is ${usage_pct}% (limit ${precheck_disk_usage_limit_pct}%)"
+  fi
+}
+
+run_compose_precheck() {
+  if ! docker compose config -q >/dev/null 2>&1; then
+    finish_error "precheck_compose" 12 "docker compose config -q failed"
+  fi
+}
+
+run_backup_marker_precheck() {
+  local marker_mtime now_ts marker_age
+
+  if [[ -z "${backup_marker_path}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "${backup_marker_path}" ]]; then
+    finish_error "precheck_backup" 13 "backup marker not found at ${backup_marker_path}"
+  fi
+
+  marker_mtime="$(stat -c '%Y' "${backup_marker_path}" 2>/dev/null || true)"
+  if ! is_non_negative_integer "${marker_mtime}"; then
+    finish_error "precheck_backup" 13 "failed to read backup marker timestamp at ${backup_marker_path}"
+  fi
+
+  now_ts="$(date +%s)"
+  if ! is_non_negative_integer "${now_ts}"; then
+    finish_error "precheck_backup" 13 "failed to read current epoch time"
+  fi
+
+  marker_age=$((now_ts - marker_mtime))
+  if (( marker_age < 0 )); then
+    marker_age=0
+  fi
+
+  if (( marker_age > backup_marker_max_age_seconds )); then
+    finish_error "precheck_backup" 13 "backup marker is ${marker_age}s old (limit ${backup_marker_max_age_seconds}s) at ${backup_marker_path}"
+  fi
+}
+
 capture_container_digests() {
   local target_name="$1"
   local -n target_ref=$target_name
@@ -271,6 +344,33 @@ while [[ $# -gt 0 ]]; do
         finish_error "bootstrap" 1 "missing value for --audit-log-path"
       fi
       audit_log_path="$2"
+      shift 2
+      ;;
+    --disk-usage-limit-pct)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --disk-usage-limit-pct"
+      fi
+      precheck_disk_usage_limit_pct="$2"
+      if ! is_non_negative_integer "${precheck_disk_usage_limit_pct}" || (( precheck_disk_usage_limit_pct > 100 )); then
+        finish_error "bootstrap" 1 "invalid value for --disk-usage-limit-pct: ${precheck_disk_usage_limit_pct}"
+      fi
+      shift 2
+      ;;
+    --backup-marker-path)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --backup-marker-path"
+      fi
+      backup_marker_path="$2"
+      shift 2
+      ;;
+    --backup-marker-max-age-seconds)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --backup-marker-max-age-seconds"
+      fi
+      backup_marker_max_age_seconds="$2"
+      if ! is_non_negative_integer "${backup_marker_max_age_seconds}" || (( backup_marker_max_age_seconds == 0 )); then
+        finish_error "bootstrap" 1 "invalid value for --backup-marker-max-age-seconds: ${backup_marker_max_age_seconds}"
+      fi
       shift 2
       ;;
     --)
@@ -324,6 +424,12 @@ if [[ ! -f docker-compose.yml && ! -f compose.yml ]]; then
   finish_error "compose_config" 6 "no compose file found in ${COMPOSE_DIR}"
 fi
 
+current_phase="precheck_disk"
+run_disk_precheck
+
+current_phase="precheck_compose"
+run_compose_precheck
+
 compose_service_list="$(docker compose config --services 2>&1)" || finish_error "compose_config" 7 "docker compose config --services failed"
 while IFS= read -r service; do
   [[ -z "${service}" ]] && continue
@@ -335,6 +441,9 @@ for service in "${services[@]}"; do
     finish_error "compose_config" 7 "service '${service}' not found in docker compose config"
   fi
 done
+
+current_phase="precheck_backup"
+run_backup_marker_precheck
 
 capture_container_digests prev_digests
 

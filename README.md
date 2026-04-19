@@ -57,6 +57,9 @@ Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a a
   - `mailFrom`
   - `checkerHeartbeatUrl`
   - `operatorIdentityHeader`
+  - `precheckDiskUsageLimitPct`
+  - `backupMarkerPath`
+  - `backupMarkerMaxAgeSeconds`
   - `uiPath`
   - `runPath`
   - `operators`
@@ -173,6 +176,12 @@ Doporucene nastaveni credentialu v n8n:
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
 - Host skript pouziva execution lock v `${COMPOSE_DIR}/.docker-update-apply.lock`, takze druhy soubezny beh skonci cistou chybou `phase: lock`.
+- Host skript pred `pull` dela pre-check:
+  - `phase: precheck_disk` pri prekroceni limitu zaplneni Docker storage
+  - `phase: precheck_compose` kdyz neprojde `docker compose config -q`
+  - `phase: precheck_backup` jen kdyz je lokalne nastaveny `backupMarkerPath`
+- Disk pre-check ma v host skriptu default `85 %`, takze funguje hned po nasazeni i bez dalsi konfigurace.
+- Backup marker je zamerne opt-in az do bodu `2.6`; bez `backupMarkerPath` se kontrola preskoci.
 
 ## Externi watchdog
 
@@ -196,6 +205,26 @@ Pro `1.7` se heartbeat nastaveni drzi jen v `config.local.json`:
 - `checkerHeartbeatHeaders` jsou volitelne; hodi se pro self-hosted watchdog za reverzni proxy nebo auth vrstvou
 - na tomhle hostu je verejna `Healthchecks` ping URL za Authelii, takze funkcni varianta je interni docker URL + `Host` header
 - externi sluzbu nastav na cron `30 6 * * *` a grace period `30 min`
+
+## Pre-check konfigurace
+
+Volitelne host pre-check parametry se drzi take v `config.local.json`:
+
+```json
+{
+  "defaults": {
+    "meta": {
+      "precheckDiskUsageLimitPct": 85,
+      "backupMarkerPath": "/opt/docker/.last-backup",
+      "backupMarkerMaxAgeSeconds": 86400
+    }
+  }
+}
+```
+
+- `precheckDiskUsageLimitPct` je volitelny override; kdyz neni nastaveny, host skript pouzije vlastni default `85`
+- `backupMarkerPath` je vypnute, dokud neni explicitne nastavene
+- `backupMarkerMaxAgeSeconds` se pouzije jen kdyz je nastavene `backupMarkerPath`
 
 ## Nasazeni na host
 

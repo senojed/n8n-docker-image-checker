@@ -12,6 +12,9 @@ const templateMetaPlaceholders = {
   mailFrom: '__MAIL_FROM__',
   checkerHeartbeatUrl: '__CHECKER_HEARTBEAT_URL__',
   operatorIdentityHeader: '__OPERATOR_IDENTITY_HEADER__',
+  precheckDiskUsageLimitPct: '__PRECHECK_DISK_USAGE_LIMIT_PCT__',
+  backupMarkerPath: '__BACKUP_MARKER_PATH__',
+  backupMarkerMaxAgeSeconds: '__BACKUP_MARKER_MAX_AGE_SECONDS__',
   uiPath: '__UI_PATH__',
   runPath: '__RUN_PATH__',
   operators: [
@@ -1030,6 +1033,32 @@ function shellQuote(value) {
   return "'" + String(value ?? '').replace(/'/g, "'\\\"'\\\"'") + "'";
 }
 
+function optionalString(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || isPlaceholderValue(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function optionalNonNegativeInteger(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+
+  const normalized = optionalString(value);
+  if (!normalized || !/^\\d+$/.test(normalized)) {
+    return null;
+  }
+
+  return Number(normalized);
+}
+
 function validationResult(summary, extra = {}) {
   const requestedServices = Array.isArray(extra.requestedServices) ? extra.requestedServices : [];
 
@@ -1192,6 +1221,18 @@ sshArguments.push('--operator', operator);
 if (workflowExecutionId) {
   sshArguments.push('--workflow-execution-id', workflowExecutionId);
 }
+const precheckDiskUsageLimitPct = optionalNonNegativeInteger(META.precheckDiskUsageLimitPct);
+if (precheckDiskUsageLimitPct !== null) {
+  sshArguments.push('--disk-usage-limit-pct', String(precheckDiskUsageLimitPct));
+}
+const backupMarkerPath = optionalString(META.backupMarkerPath);
+if (backupMarkerPath) {
+  sshArguments.push('--backup-marker-path', backupMarkerPath);
+}
+const backupMarkerMaxAgeSeconds = optionalNonNegativeInteger(META.backupMarkerMaxAgeSeconds);
+if (backupMarkerPath && backupMarkerMaxAgeSeconds !== null) {
+  sshArguments.push('--backup-marker-max-age-seconds', String(backupMarkerMaxAgeSeconds));
+}
 sshArguments.push(...expanded);
 const sshCommand = sshArguments.map(shellQuote).join(' ');
 
@@ -1211,6 +1252,9 @@ return [{
     operator,
     workflowExecutionId,
     auditLogPath: META.auditLogPath || null,
+    precheckDiskUsageLimitPct,
+    backupMarkerPath,
+    backupMarkerMaxAgeSeconds: backupMarkerPath ? backupMarkerMaxAgeSeconds : null,
   },
 }];
 `.trim();
