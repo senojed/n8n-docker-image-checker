@@ -26,6 +26,13 @@
         "Immich casto meni API i migrace databaze.",
         "Drz server a machine-learning na stejne verzi."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:2283/server-info/ping",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
       "autoInclude": [
         "immich-machine-learning"
       ]
@@ -44,6 +51,11 @@
         "Patri k Immich stacku a mel by bezet na stejne verzi jako server.",
         "Sam o sobe byva mensi riziko, ale verze musi ladit se serverem."
       ],
+      "healthCheck": {
+        "type": "docker",
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
       "autoInclude": [
         "immich-server"
       ]
@@ -62,6 +74,13 @@
         "Update muze menit chovani workflowu nebo HTML webhooku.",
         "Je to orchestrator teto automatizace, takze ma vyssi dopad."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:5678/healthz",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -78,6 +97,13 @@
         "Velka stateful aplikace s DB a dlouhodobymi migracemi.",
         "Patch update muze byt v pohode, ale major skok chce kontrolu."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8888/status.php",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -94,6 +120,13 @@
         "Kriticka auth vrstva pred vice sluzbami.",
         "I mensi zmena muze ovlivnit prihlasovani nebo OIDC flow."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:9091/api/health",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -110,6 +143,13 @@
         "Citliva sluzba na hesla a identity.",
         "Aktualizace by mela probehnout opatrne a s overenim logu."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8080/alive",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -126,6 +166,13 @@
         "Stateful dokumentovy system s DB a OCR workflow.",
         "Casto je rozumne mrknout na release notes kvuli migracim."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8000/",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -142,6 +189,13 @@
         "Obvykle mensi riziko nez u auth nebo groupware sluzeb.",
         "Stejne se hodi po updatu rychle otevrit UI a log."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8083/login",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -158,6 +212,13 @@
         "Mene kriticka sluzba nez auth nebo cloud storage.",
         "Po updatu je dobre zkontrolovat OPDS a web UI."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8585/",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     },
     {
@@ -174,6 +235,13 @@
         "Bezny update byva casto bezproblemovy.",
         "Po updatu se vyplati otevrit web a prehrat kratky test."
       ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:13378/login",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
       "autoInclude": []
     }
   ]

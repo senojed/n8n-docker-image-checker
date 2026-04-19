@@ -226,6 +226,8 @@ flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary"
 
 **Problém:** Dnes skript končí `docker compose ps` — to jen řekne, že container běží, ne že služba funguje. Bez post-checku není automatický signál pro rollback.
 
+**Stav 2026-04-19:** Repo-first část je hotová a hardening varianta má připravené per-service `healthCheck` metadata i rollback runbook v result mailu. Zbývá prakticky jen end-to-end otestovat reálný `post_check` fail na bezpečně vybraném updatu.
+
 **Změnit v:** [docker-update-apply.sh](docker-update-apply.sh), sekce po `up`. [service-map.json](service-map.json) rozšířit o `healthCheck` per služba.
 
 **Konkrétně:**

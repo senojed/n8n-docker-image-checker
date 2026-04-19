@@ -1059,6 +1059,57 @@ function optionalNonNegativeInteger(value) {
   return Number(normalized);
 }
 
+function normalizeHealthCheckConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { type: 'none' };
+  }
+
+  const type = optionalString(value.type) || 'none';
+  if (type === 'none') {
+    return { type: 'none' };
+  }
+
+  const timeoutSeconds = optionalNonNegativeInteger(value.timeoutSeconds);
+  const intervalSeconds = optionalNonNegativeInteger(value.intervalSeconds);
+
+  if (type === 'docker') {
+    return {
+      type,
+      timeoutSeconds: timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds : 60,
+      intervalSeconds: intervalSeconds && intervalSeconds > 0 ? intervalSeconds : 5,
+    };
+  }
+
+  if (type === 'http') {
+    const url = optionalString(value.url);
+    if (!url) {
+      return { type: 'none' };
+    }
+
+    const rawExpectStatus = Array.isArray(value.expectStatus) ? value.expectStatus : [value.expectStatus];
+    const expectStatus = rawExpectStatus
+      .map((entry) => optionalNonNegativeInteger(entry))
+      .filter((entry) => entry !== null && entry > 0);
+
+    return {
+      type,
+      url,
+      expectStatus: expectStatus.length ? expectStatus : [200],
+      timeoutSeconds: timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds : 60,
+      intervalSeconds: intervalSeconds && intervalSeconds > 0 ? intervalSeconds : 5,
+      headers: value.headers && typeof value.headers === 'object' && !Array.isArray(value.headers)
+        ? Object.fromEntries(
+            Object.entries(value.headers)
+              .map(([name, headerValue]) => [optionalString(name), optionalString(headerValue)])
+              .filter(([name, headerValue]) => name && headerValue),
+          )
+        : {},
+    };
+  }
+
+  return { type: 'none' };
+}
+
 function validationResult(summary, extra = {}) {
   const requestedServices = Array.isArray(extra.requestedServices) ? extra.requestedServices : [];
 
@@ -1233,6 +1284,11 @@ const backupMarkerMaxAgeSeconds = optionalNonNegativeInteger(META.backupMarkerMa
 if (backupMarkerPath && backupMarkerMaxAgeSeconds !== null) {
   sshArguments.push('--backup-marker-max-age-seconds', String(backupMarkerMaxAgeSeconds));
 }
+const healthChecksPayload = Object.fromEntries(
+  expanded.map((service) => [service, normalizeHealthCheckConfig(SERVICE_MAP_BY_SERVICE[service]?.healthCheck)]),
+);
+const healthChecksPayloadBase64 = Buffer.from(JSON.stringify(healthChecksPayload), 'utf8').toString('base64');
+sshArguments.push('--health-checks-payload-base64', healthChecksPayloadBase64);
 sshArguments.push(...expanded);
 const sshCommand = sshArguments.map(shellQuote).join(' ');
 
@@ -1255,6 +1311,7 @@ return [{
     precheckDiskUsageLimitPct,
     backupMarkerPath,
     backupMarkerMaxAgeSeconds: backupMarkerPath ? backupMarkerMaxAgeSeconds : null,
+    healthChecksPayload,
   },
 }];
 `.trim();
@@ -1684,6 +1741,7 @@ return [{ json: { html } }];
 `.trim();
 
 const runResultRenderCode = `
+${sharedRuntime}
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -1705,6 +1763,74 @@ function parseStructuredResult(text) {
   return null;
 }
 
+function sanitizeOutput(text) {
+  const lines = String(text || '')
+    .replace(/\\r\\n/g, '\\n')
+    .split('\\n')
+    .map((line) => line.replace(/\\u001b\\[[0-9;]*m/g, '').trimEnd())
+    .filter((line) => !/^__RESULT__(:|$)/.test(line))
+    .filter((line) => !/^__RESULT_JSON__:(.*)$/.test(line))
+    .filter((line) => !/^Image .+ Pulling\\s*$/.test(line))
+    .filter((line) => !/^ Image .+ Pulled\\s*$/.test(line));
+
+  const compacted = [];
+  let lastBlank = false;
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (lastBlank) continue;
+      compacted.push('');
+      lastBlank = true;
+      continue;
+    }
+
+    compacted.push(line);
+    lastBlank = false;
+  }
+
+  return compacted.join('\\n').trim();
+}
+
+function phaseLabel(phase) {
+  const labels = {
+    dry_run: 'Dry-run',
+    complete: 'Dokonceno',
+    lock: 'Soubezny beh',
+    precheck_disk: 'Kontrola disku',
+    precheck_compose: 'Kontrola docker compose',
+    precheck_backup: 'Kontrola backupu',
+    post_check: 'Kontrola po updatu',
+  };
+
+  return labels[phase] || (phase || 'Neznama faze');
+}
+
+function phaseExplanation(ok, dryRun, phase) {
+  if (ok) {
+    return dryRun
+      ? 'Dry-run probehl bez chyby a nic na hostu nemenil.'
+      : 'Update probehl bez chyby a nasledne kontroly prosly.';
+  }
+
+  if (dryRun) {
+    return 'Dry-run narazil na problem jeste pred ostrou zmenou kontejneru.';
+  }
+
+  if (phase === 'post_check') {
+    return 'Update se provedl, ale nasledna kontrola sluzby neprosla. Sluzba potrebuje rucni kontrolu.';
+  }
+
+  if (phase === 'lock') {
+    return 'Jiny update uz prave bezi, proto se tento pokus bezpecne zastavil.';
+  }
+
+  if (phase === 'precheck_disk' || phase === 'precheck_compose' || phase === 'precheck_backup') {
+    return 'Update se vubec nespustil, protoze neprosla predbezna kontrola.';
+  }
+
+  return 'Workflow narazil na chybu a potrebuje rucni kontrolu.';
+}
+
 const requestData = $('Validate Selection').first().json;
 const stdout = $input.first().json.stdout || '';
 const stderr = $input.first().json.stderr || '';
@@ -1719,39 +1845,134 @@ const prevDigests = structuredResult?.prev_digests || {};
 const newDigests = structuredResult?.new_digests || {};
 const floatingTagWarning = Boolean(requestData.floatingTagWarning || structuredResult?.floating_tag_warning);
 const floatingServices = requestData.floatingServices || [];
-const compactOutput = combined.length > 4000 ? combined.slice(0, 4000) + '\\n...[truncated]' : combined;
+const sanitizedOutput = sanitizeOutput(combined);
+const compactOutput = sanitizedOutput.length > 3500 ? sanitizedOutput.slice(0, 3500) + '\\n...[truncated]' : sanitizedOutput;
 const actionLabel = dryRun ? 'Dry-run' : 'Update';
 const operator = structuredResult?.operator || requestData.operator || null;
 const workflowExecutionId = structuredResult?.workflow_execution_id || requestData.workflowExecutionId || String($execution.id || '');
 const auditHost = structuredResult?.host || null;
+const servicesText = requestData.labels.join(', ');
+const titleText = ok
+  ? (dryRun ? 'Dry-run probehl v poradku' : 'Docker update probehl v poradku')
+  : (dryRun ? 'Dry-run selhal' : 'Docker update selhal');
+const explanationText = phaseExplanation(ok, dryRun, phase);
 
 const message = ok
-  ? actionLabel + ' dokoncen pro: ' + requestData.labels.join(', ')
-  : actionLabel + ' selhal pro: ' + requestData.labels.join(', ') + (summary ? ' - ' + summary : '');
+  ? actionLabel + ' dokoncen pro: ' + servicesText
+  : actionLabel + ' selhal pro: ' + servicesText + (summary ? ' - ' + summary : '');
+
+const rollbackPlans = phase === 'post_check'
+  ? requestData.expandedServices
+      .map((service) => {
+        const meta = SERVICE_MAP_BY_SERVICE[service];
+        const previousDigest = prevDigests[service];
+        const newDigest = newDigests[service];
+        const imageRef = meta?.image;
+        const label = meta?.label || service;
+
+        if (!previousDigest || !imageRef) {
+          return {
+            service,
+            label,
+            kind: 'missing',
+          };
+        }
+
+        if (newDigest && previousDigest === newDigest) {
+          return {
+            service,
+            label,
+            kind: 'unchanged',
+            digest: previousDigest,
+          };
+        }
+
+        return {
+          service,
+          label,
+          kind: 'available',
+          commands: [
+            '# ' + label,
+            'docker image tag ' + previousDigest + ' ' + imageRef,
+            'docker compose up -d --no-deps ' + service,
+            'docker compose ps ' + service,
+          ].join('\\n'),
+        };
+      })
+  : [];
+const rollbackCommands = rollbackPlans
+  .filter((plan) => plan.kind === 'available')
+  .map((plan) => plan.commands);
+const rollbackCommandsText = rollbackCommands.join('\\n\\n');
+const rollbackUnavailableNotes = rollbackPlans
+  .filter((plan) => plan.kind !== 'available')
+  .map((plan) => {
+    if (plan.kind === 'unchanged') {
+      return plan.label + ': rollback z tohoto behu nedava smysl, protoze predchozi a novy digest jsou stejne (' + plan.digest + ').';
+    }
+
+    return plan.label + ': chybi predchozi digest, takze rollback prikaz nejde vygenerovat automaticky.';
+  });
 
 const metadataHtml = [
-  operator ? '<div><strong>Operator:</strong> ' + escapeHtml(operator) + '</div>' : '',
-  workflowExecutionId ? '<div><strong>Execution:</strong> ' + escapeHtml(workflowExecutionId) + '</div>' : '',
-  auditHost ? '<div><strong>Host:</strong> ' + escapeHtml(auditHost) + '</div>' : '',
-  phase ? '<div><strong>Faze:</strong> ' + escapeHtml(phase) + '</div>' : '',
-  summary ? '<div><strong>Shrnuti:</strong> ' + escapeHtml(summary) + '</div>' : '',
+  '<div style="margin:0 0 6px"><strong>Sluzby:</strong> ' + escapeHtml(servicesText) + '</div>',
+  '<div style="margin:0 0 6px"><strong>Faze:</strong> ' + escapeHtml(phaseLabel(phase)) + '</div>',
+  operator ? '<div style="margin:0 0 6px"><strong>Operator:</strong> ' + escapeHtml(operator) + '</div>' : '',
+  workflowExecutionId ? '<div style="margin:0 0 6px"><strong>Execution:</strong> ' + escapeHtml(workflowExecutionId) + '</div>' : '',
+  auditHost ? '<div style="margin:0 0 6px"><strong>Host:</strong> ' + escapeHtml(auditHost) + '</div>' : '',
+  summary ? '<div style="margin:0"><strong>Chyba:</strong> ' + escapeHtml(summary) + '</div>' : '',
 ].filter(Boolean).join('');
 
 const floatingTagHtml = floatingTagWarning
-  ? '<div style="margin:12px 0;padding:12px;background:#422006;color:#fde68a;border-radius:12px"><strong>Floating tag warning:</strong> ' +
-      escapeHtml('Vybrane sluzby bezi na floating tagu, takze diff nemusi odpovidat jen zmene verze.') +
+  ? '<div style="margin:14px 0;padding:12px 14px;background:#422006;color:#fde68a;border-radius:12px"><strong>Pozor na floating tag:</strong> ' +
+      escapeHtml('U vybranych sluzeb se muze zmenit digest i bez zjevne zmeny verze.') +
       (floatingServices.length ? '<div style="margin-top:6px">' + escapeHtml(floatingServices.join(', ')) + '</div>' : '') +
     '</div>'
   : '';
 
-const mailHtml = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto"><h2>' +
-  escapeHtml(ok ? 'Docker ' + actionLabel.toLowerCase() + ' uspel' : 'Docker ' + actionLabel.toLowerCase() + ' selhal') +
-  '</h2><p>' + escapeHtml(message) + '</p>' +
-  (metadataHtml ? '<div style="margin:12px 0;color:#334155">' + metadataHtml + '</div>' : '') +
+const rollbackHtml = rollbackCommandsText
+  ? '<div style="margin:16px 0;padding:16px;background:#1f2937;color:#e5e7eb;border-radius:14px"><div style="font-size:18px;font-weight:700;margin-bottom:8px">Rollback runbook</div><div style="color:#cbd5e1;margin-bottom:10px">Pouzij jen pokud potvrdis, ze problem zpusobil novy image. Rollback neni automaticky.</div><pre style="white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:14px;border-radius:12px;margin:0">' +
+      escapeHtml('cd /opt/docker\\n\\n' + rollbackCommandsText) +
+    '</pre><div style="margin-top:10px;color:#cbd5e1">Po navratu zkontroluj logy, health endpoint a pripadne DB migrace.</div></div>'
+  : rollbackUnavailableNotes.length
+    ? '<div style="margin:16px 0;padding:14px;background:#172554;color:#dbeafe;border-radius:14px"><div style="font-weight:700;margin-bottom:8px">Rollback z tohoto behu</div><div>' +
+        rollbackUnavailableNotes.map((note) => '<div style="margin:0 0 6px">' + escapeHtml(note) + '</div>').join('') +
+      '</div></div>'
+    : '';
+
+const nextSteps = ok
+  ? [
+      'Otevri sluzbu a rychle over, ze UI funguje.',
+      'Kdyz je to stateful sluzba, zkontroluj i logy a background joby.',
+    ]
+  : phase === 'post_check'
+    ? [
+        'Otevri sluzbu nebo health endpoint a over, co presne po updatu nefunguje.',
+        'Zkontroluj docker compose logy dane sluzby.',
+        rollbackCommandsText
+          ? 'Kdyz problem zpusobil novy image, pouzij rollback runbook niz.'
+          : 'Pokud bude potreba navrat, udelej ho rucne po kontrole digestu a logu.',
+      ]
+    : [
+        'Otevri execution v n8n a zkontroluj detail chyby.',
+        'Podle faze oprav problem a pak spust novy test.',
+      ];
+const nextStepsHtml = '<ol style="margin:10px 0 0 20px;padding:0;color:#1e293b">' +
+  nextSteps.map((step) => '<li style="margin:0 0 8px">' + escapeHtml(step) + '</li>').join('') +
+  '</ol>';
+
+const mailHtml = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#0f172a">' +
+  '<h2 style="margin:0 0 12px;font-size:32px;line-height:1.2">' + escapeHtml(titleText) + '</h2>' +
+  '<p style="margin:0 0 14px;font-size:16px;line-height:1.6">' + escapeHtml(explanationText) + '</p>' +
+  '<div style="margin:0 0 16px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px">' + metadataHtml + '</div>' +
   floatingTagHtml +
-  '<pre style="white-space:pre-wrap;background:#111827;color:#e5e7eb;padding:16px;border-radius:12px">' +
+  '<div style="margin:16px 0;padding:16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px"><div style="font-size:18px;font-weight:700;margin-bottom:6px">Dalsi doporuceny krok</div>' +
+    nextStepsHtml +
+  '</div>' +
+  rollbackHtml +
+  '<div style="margin:16px 0 0;padding:16px;background:#0f172a;color:#e2e8f0;border-radius:14px"><div style="font-size:18px;font-weight:700;margin-bottom:8px">Zkraceny technicky log</div><pre style="white-space:pre-wrap;word-break:break-word;margin:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace">' +
     escapeHtml(compactOutput || 'Bez vystupu') +
-  '</pre></div>';
+  '</pre></div></div>';
 
 return [{
   json: {
@@ -1770,6 +1991,7 @@ return [{
     auditLogPath: requestData.auditLogPath || null,
     prevDigests,
     newDigests,
+    rollbackCommands,
     structuredResult,
     compactOutput,
     mailHtml,

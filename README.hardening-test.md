@@ -7,7 +7,7 @@ Live `Codex` checker je povazovany za deprecated a nema se dal rozvijet.
 
 ## Aktualni faze
 
-Jsme ve `Phase 1 complete-ish + Phase 2.1/2.2 on hardened host`.
+Jsme ve `Phase 1 complete-ish + Phase 2.1/2.2/2.3 wired on hardened host`.
 
 To prakticky znamena:
 
@@ -19,6 +19,7 @@ To prakticky znamena:
 - append-only audit trail do `/var/log/docker-updates/audit.jsonl` je nasazeny i na test hostu
 - hardening checker je pripraveny na schedule + heartbeat do externiho `Healthchecks`
 - hardening host script uz ma nasazeny execution lock a pre-check pred `pull`
+- hardening `Run` workflow a host script uz umi i `post_check` po realnem updatu
 
 ## Nasazena test varianta
 
@@ -92,6 +93,7 @@ Validation testy `Run` webhooku:
 - host dry-run po nasazeni `2.2` porad prochazi
 - vynuceny disk fail vraci `phase: precheck_disk`
 - vynuceny backup marker fail vraci `phase: precheck_backup`
+- health endpointy pro allowlisted sluzby byly overene primo na hostu
 
 Failure-path test:
 
@@ -112,6 +114,8 @@ Failure-path test:
 - chranit host update skript proti soubeznemu behu pres lock file `${COMPOSE_DIR}/.docker-update-apply.lock`
 - zastavit update jeste pred `pull`, kdyz je Docker storage nad limitem nebo kdyz je rozbity compose config
 - volitelne vynutit cerstvy backup marker pres `backupMarkerPath`, az bude hotovy bod `2.6`
+- po realnem updatu overit, ze sluzba skutecne nabehla, a pri failu vratit `phase: post_check`
+- failure mail po `post_check` failu umi vypsat manual rollback runbook z `prev_digests`
 
 ## Provozni poznamka k n8n
 
@@ -176,3 +180,4 @@ Pri dalsi zmene hardening test varianty aktualizovat:
 - aktivovan heartbeat na self-hosted `Healthchecks` pres lokalni config hardening profilu
 - doplnen execution lock v host skriptu, aby soubezny druhy beh skoncil na `phase: lock`
 - doplnen host pre-check pred `pull`: defaultni disk limit `85 %`, explicitni `phase: precheck_compose` a volitelny backup marker wiring
+- doplnen `post_check` wiring: per-service `healthCheck` metadata v `service-map.json`, predani do host skriptu a rollback runbook do result mailu

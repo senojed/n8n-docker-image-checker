@@ -66,7 +66,7 @@ Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a a
   - `smtpCredentialName`
   - `sshCredentialName`
   - `sshHost`
-- `service-map.json` drzi bezpecne sdilena runtime metadata jako `auditLogPath`
+- `service-map.json` drzi bezpecne sdilena runtime metadata jako `auditLogPath` a per-service `healthCheck`
 
 Zakladni workflow:
 
@@ -182,6 +182,11 @@ Doporucene nastaveni credentialu v n8n:
   - `phase: precheck_backup` jen kdyz je lokalne nastaveny `backupMarkerPath`
 - Disk pre-check ma v host skriptu default `85 %`, takze funguje hned po nasazeni i bez dalsi konfigurace.
 - Backup marker je zamerne opt-in az do bodu `2.6`; bez `backupMarkerPath` se kontrola preskoci.
+- Po `docker compose up` host skript dela i `post_check` podle `healthCheck` metadata u sluzby.
+- `post_check` umi dva rezimy:
+  - `docker`: ceka na `healthy`, pripadne aspon `running`
+  - `http`: vola lokalni URL a ceka na ocekavany HTTP status
+- Kdyz `post_check` failne, update skonci s `phase: post_check` a result mail obsahuje manual rollback runbook.
 
 ## Externi watchdog
 
@@ -225,6 +230,55 @@ Volitelne host pre-check parametry se drzi take v `config.local.json`:
 - `precheckDiskUsageLimitPct` je volitelny override; kdyz neni nastaveny, host skript pouzije vlastni default `85`
 - `backupMarkerPath` je vypnute, dokud neni explicitne nastavene
 - `backupMarkerMaxAgeSeconds` se pouzije jen kdyz je nastavene `backupMarkerPath`
+
+## Post-check konfigurace
+
+Per-service health check se drzi v `service-map.json`, typicky takto:
+
+```json
+{
+  "service": "nextcloud",
+  "healthCheck": {
+    "type": "http",
+    "url": "http://127.0.0.1:8888/status.php",
+    "expectStatus": 200,
+    "timeoutSeconds": 120,
+    "intervalSeconds": 5
+  }
+}
+```
+
+Nebo pro interni service bez HTTP endpointu:
+
+```json
+{
+  "service": "immich-machine-learning",
+  "healthCheck": {
+    "type": "docker",
+    "timeoutSeconds": 120,
+    "intervalSeconds": 5
+  }
+}
+```
+
+- kdyz `healthCheck` chybi, renderer posle `type: none` a post-check se preskoci
+- `docker` je vhodny pro kontejnery s vlastnim Docker healthcheckem
+- `http` je vhodny pro sluzby, kde ma smysl realne otevrit lokalni endpoint po updatu
+
+## Rollback runbook
+
+Prvni verze rollbacku neni automaticka.
+
+Kdyz update failne na `phase: post_check`, result mail obsahuje manualni prikazy ve tvaru:
+
+```bash
+cd /opt/docker
+docker image tag <prev_image_id> <image_ref>
+docker compose up -d --no-deps <service>
+docker compose ps <service>
+```
+
+Tohle vrati puvodni image pod stejny tag, ktery compose pouziva. Po rollbacku je porad potreba rucne zkontrolovat logy a pripadne migrace databaze.
 
 ## Nasazeni na host
 

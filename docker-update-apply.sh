@@ -16,6 +16,7 @@ audit_log_path="${DEFAULT_AUDIT_LOG_PATH}"
 precheck_disk_usage_limit_pct="${DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT}"
 backup_marker_path=""
 backup_marker_max_age_seconds="${DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS}"
+health_checks_payload_base64=""
 services=()
 result_emitted=0
 current_phase="bootstrap"
@@ -301,6 +302,234 @@ run_backup_marker_precheck() {
   fi
 }
 
+run_post_checks() {
+  local post_check_payload post_check_ok post_check_summary
+
+  if [[ -z "${health_checks_payload_base64}" ]]; then
+    return 0
+  fi
+
+  post_check_payload="$(
+    SERVICES_PAYLOAD="$(array_payload services)" \
+    HEALTH_CHECKS_PAYLOAD_BASE64="${health_checks_payload_base64}" \
+    COMPOSE_DIR="${COMPOSE_DIR}" \
+    python3 - <<'PY'
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def lines(name):
+    value = os.environ.get(name, "")
+    if not value:
+        return []
+    return [line for line in value.splitlines() if line.strip()]
+
+
+def clamp_positive_int(value, fallback):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def docker_status(compose_dir, service):
+    container_id = subprocess.run(
+        ["docker", "compose", "ps", "-q", service],
+        cwd=compose_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if not container_id:
+        return None, "container not found"
+
+    inspect = json.loads(
+        subprocess.run(
+            ["docker", "inspect", container_id],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )[0]
+    state = inspect.get("State", {})
+    health = (state.get("Health") or {}).get("Status")
+    status = health or state.get("Status")
+    return status, None
+
+
+def poll_docker(service, config, compose_dir):
+    timeout = clamp_positive_int(config.get("timeoutSeconds"), 60)
+    interval = clamp_positive_int(config.get("intervalSeconds"), 5)
+    deadline = time.time() + timeout
+    last_status = None
+    last_error = None
+
+    while time.time() <= deadline:
+        try:
+            status, error = docker_status(compose_dir, service)
+        except Exception as exc:
+            status, error = None, str(exc)
+
+        last_status = status
+        last_error = error
+        if status in {"healthy", "running"}:
+            return {
+                "service": service,
+                "ok": True,
+                "type": "docker",
+                "status": status,
+                "summary": f"{service}: docker status {status}",
+            }
+
+        time.sleep(interval)
+
+    suffix = f"status {last_status}" if last_status else (last_error or "unknown error")
+    return {
+        "service": service,
+        "ok": False,
+        "type": "docker",
+        "status": last_status,
+        "summary": f"{service}: docker health check failed ({suffix})",
+    }
+
+
+def poll_http(service, config):
+    url = config.get("url")
+    timeout = clamp_positive_int(config.get("timeoutSeconds"), 60)
+    interval = clamp_positive_int(config.get("intervalSeconds"), 5)
+    expected = config.get("expectStatus") or [200]
+    expected_statuses = {int(value) for value in expected}
+    headers = {
+        str(name): str(value)
+        for name, value in (config.get("headers") or {}).items()
+        if str(name).strip() and str(value).strip()
+    }
+    deadline = time.time() + timeout
+    last_status = None
+    last_error = None
+
+    while time.time() <= deadline:
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=min(interval, 10)) as response:
+                status = response.getcode()
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except Exception as exc:
+            status = None
+            last_error = str(exc)
+        else:
+            last_error = None
+
+        last_status = status
+        if status in expected_statuses:
+            return {
+                "service": service,
+                "ok": True,
+                "type": "http",
+                "url": url,
+                "status": status,
+                "summary": f"{service}: http {status} at {url}",
+            }
+
+        if status is not None:
+            last_error = f"http {status}"
+
+        time.sleep(interval)
+
+    suffix = last_error or (f"http {last_status}" if last_status is not None else "unknown error")
+    return {
+        "service": service,
+        "ok": False,
+        "type": "http",
+        "url": url,
+        "status": last_status,
+        "summary": f"{service}: http health check failed ({suffix}) at {url}",
+    }
+
+
+services = lines("SERVICES_PAYLOAD")
+payload = json.loads(base64.b64decode(os.environ["HEALTH_CHECKS_PAYLOAD_BASE64"]).decode("utf-8"))
+compose_dir = os.environ["COMPOSE_DIR"]
+details = []
+
+for service in services:
+    config = payload.get(service) or {"type": "none"}
+    check_type = str(config.get("type") or "none").strip().lower()
+    if check_type == "none":
+        details.append({
+            "service": service,
+            "ok": True,
+            "type": "none",
+            "summary": f"{service}: no post-check configured",
+        })
+        continue
+
+    if check_type == "docker":
+        details.append(poll_docker(service, config, compose_dir))
+        continue
+
+    if check_type == "http":
+        details.append(poll_http(service, config))
+        continue
+
+    details.append({
+        "service": service,
+        "ok": False,
+        "type": check_type,
+        "summary": f"{service}: unsupported health check type {check_type}",
+    })
+
+failed = [detail for detail in details if not detail.get("ok")]
+summary = "post-check passed"
+if failed:
+    summary = "; ".join(detail["summary"] for detail in failed)
+
+print(json.dumps({"ok": not failed, "summary": summary, "details": details}, ensure_ascii=False, sort_keys=True))
+PY
+  )" || finish_error "post_check" 14 "post-check runner failed"
+
+  echo "=== Post Check ==="
+  POST_CHECK_PAYLOAD="${post_check_payload}" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["POST_CHECK_PAYLOAD"])
+for detail in payload.get("details") or []:
+    print(detail.get("summary") or json.dumps(detail, ensure_ascii=False, sort_keys=True))
+PY
+
+  post_check_ok="$(
+    POST_CHECK_PAYLOAD="${post_check_payload}" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["POST_CHECK_PAYLOAD"])
+print("1" if payload.get("ok") else "0")
+PY
+  )"
+
+  if [[ "${post_check_ok}" != "1" ]]; then
+    post_check_summary="$(
+      POST_CHECK_PAYLOAD="${post_check_payload}" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["POST_CHECK_PAYLOAD"])
+print(payload.get("summary") or "post-check failed")
+PY
+    )"
+    finish_error "post_check" 14 "${post_check_summary}"
+  fi
+}
+
 capture_container_digests() {
   local target_name="$1"
   local -n target_ref=$target_name
@@ -371,6 +600,13 @@ while [[ $# -gt 0 ]]; do
       if ! is_non_negative_integer "${backup_marker_max_age_seconds}" || (( backup_marker_max_age_seconds == 0 )); then
         finish_error "bootstrap" 1 "invalid value for --backup-marker-max-age-seconds: ${backup_marker_max_age_seconds}"
       fi
+      shift 2
+      ;;
+    --health-checks-payload-base64)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --health-checks-payload-base64"
+      fi
+      health_checks_payload_base64="$2"
       shift 2
       ;;
     --)
@@ -481,4 +717,8 @@ capture_container_digests new_digests
 echo
 docker compose ps "${services[@]}"
 echo
+
+current_phase="post_check"
+run_post_checks
+
 finish_success "complete" "update applied"
