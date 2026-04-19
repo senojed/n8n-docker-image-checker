@@ -5,6 +5,7 @@ COMPOSE_DIR="/opt/docker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
 DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
+LOCK_FILE_PATH="${COMPOSE_DIR}/.docker-update-apply.lock"
 
 dry_run=0
 operator=""
@@ -210,6 +211,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+acquire_execution_lock() {
+  current_phase="lock"
+
+  if ! command -v flock >/dev/null 2>&1; then
+    finish_error "lock" 8 "flock is not available on host"
+  fi
+
+  if ! touch "${LOCK_FILE_PATH}"; then
+    finish_error "lock" 8 "lock file is not writable at ${LOCK_FILE_PATH}"
+  fi
+
+  exec 9<>"${LOCK_FILE_PATH}"
+  if ! flock -n 9; then
+    finish_error "lock" 8 "another update in progress"
+  fi
+}
+
 capture_container_digests() {
   local target_name="$1"
   local -n target_ref=$target_name
@@ -277,6 +295,9 @@ if [[ ${#services[@]} -lt 1 ]]; then
   finish_error "allowlist" 2 "no services requested"
 fi
 
+acquire_execution_lock
+
+current_phase="allowlist"
 if [[ ! -f "${ALLOWED_FILE}" ]]; then
   finish_error "allowlist" 3 "missing allowlist file at ${ALLOWED_FILE}"
 fi

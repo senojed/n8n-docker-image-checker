@@ -172,6 +172,7 @@ Doporucene nastaveni credentialu v n8n:
 - `meta.operators` muze byt bud jednoduchy seznam jmen, nebo pole objektu `{ id, label, token, identities[] }`.
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
+- Host skript pouziva execution lock v `${COMPOSE_DIR}/.docker-update-apply.lock`, takze druhy soubezny beh skonci cistou chybou `phase: lock`.
 
 ## Externi watchdog
 

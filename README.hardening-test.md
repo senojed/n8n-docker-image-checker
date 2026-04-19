@@ -105,6 +105,7 @@ Failure-path test:
 - poslat vysledkovy mail po realnem updatu
 - odmitnout logicky neplatne requesty bez spousteni host skriptu
 - byt pripraveny na prechod z Gmail OAuth na `SMTP` credential `ops-smtp`
+- chranit host update skript proti soubeznemu behu pres lock file `${COMPOSE_DIR}/.docker-update-apply.lock`
 
 ## Provozni poznamka k n8n
 
@@ -167,3 +168,4 @@ Pri dalsi zmene hardening test varianty aktualizovat:
 - nasazen audit log mimo n8n executions na test host vcetne operator contextu
 - opravena code-node quoting chyba v test `Run` workflowu po deployi `1.4`
 - aktivovan heartbeat na self-hosted `Healthchecks` pres lokalni config hardening profilu
+- doplnen execution lock v host skriptu, aby soubezny druhy beh skoncil na `phase: lock`

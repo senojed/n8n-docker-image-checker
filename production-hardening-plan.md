@@ -194,9 +194,10 @@ Tyto body výrazně snižují riziko, ale nejsou blocker pro první produkční 
 
 **Změnit v:** [docker-update-apply.sh](docker-update-apply.sh)
 
-**Konkrétně:** `flock` na začátku skriptu:
+**Konkrétně:** `flock` na začátku skriptu. Aktuální implementace používá lock file v `${COMPOSE_DIR}/.docker-update-apply.lock`:
 ```bash
-exec 9>/var/lock/docker-update-apply.lock
+touch "${COMPOSE_DIR}/.docker-update-apply.lock"
+exec 9<>"${COMPOSE_DIR}/.docker-update-apply.lock"
 flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary":"another update in progress"}'; exit 8; }
 ```
 
