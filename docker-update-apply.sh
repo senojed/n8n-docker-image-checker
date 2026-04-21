@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
 DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
 DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT=85
-DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS=86400
+DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS=604800
 DEFAULT_BACKUP_SNAPSHOT_ROOT="${COMPOSE_DIR}/.backups"
 DEFAULT_BACKUP_RETENTION_RUNS=30
 LOCK_FILE_PATH="${COMPOSE_DIR}/.docker-update-apply.lock"
@@ -67,7 +67,7 @@ build_result_payload() {
   RESULT_WORKFLOW_EXECUTION_ID="${workflow_execution_id}" \
   RESULT_HOST="${host_name}" \
   RESULT_BACKUP_SNAPSHOT_DIR="${backup_snapshot_dir}" \
-  RESULT_BACKUP_MARKER_PATH="${backup_snapshot_marker_path}" \
+  RESULT_BACKUP_MARKER_PATH="${backup_snapshot_marker_path:-${backup_marker_path}}" \
   SERVICES_PAYLOAD="$(array_payload services)" \
   PREV_DIGESTS_PAYLOAD="$(map_payload prev_digests)" \
   NEW_DIGESTS_PAYLOAD="$(map_payload new_digests)" \
@@ -540,12 +540,22 @@ def poll_docker(service, config, compose_dir):
     }
 
 
+def normalize_expected_statuses(value):
+    if value in (None, "", []):
+        values = [200]
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = [value]
+
+    return {int(item) for item in values}
+
+
 def poll_http(service, config):
     url = config.get("url")
     timeout = clamp_positive_int(config.get("timeoutSeconds"), 60)
     interval = clamp_positive_int(config.get("intervalSeconds"), 5)
-    expected = config.get("expectStatus") or [200]
-    expected_statuses = {int(value) for value in expected}
+    expected_statuses = normalize_expected_statuses(config.get("expectStatus"))
     headers = {
         str(name): str(value)
         for name, value in (config.get("headers") or {}).items()

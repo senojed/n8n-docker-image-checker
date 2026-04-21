@@ -216,7 +216,7 @@ flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary"
 **Konkrétně:**
 1. `df` volume backing Dockeru → pokud `Use%` > 85 → fail `phase=precheck_disk`.
 2. `docker compose config -q` → pokud nenulový exit → fail `phase=precheck_compose`.
-3. Volitelně `stat` na backup marker soubor (`/opt/docker/.last-backup`) mladší než 24 h → jinak `phase=precheck_backup`. Backup marker aktualizuje jiný systém (bod 2.6), tohle je jen kontrola, ne spouštěč backupu.
+3. Volitelně `stat` na backup marker soubor (`/opt/docker/.last-backup`) mladší než zvolený limit → jinak `phase=precheck_backup`. Pro tenhle homelab je rozumný default `604800` sekund (`7` dní), ne denní cadence. Backup marker aktualizuje jiný systém (bod 2.6), tohle je jen kontrola, ne spouštěč backupu.
 
 **Hotovo když:** Pre-check selhání nespustí `pull` a produkuje čitelný error s `phase=precheck_*`.
 

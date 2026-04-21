@@ -222,7 +222,7 @@ Volitelne host pre-check parametry se drzi take v `config.local.json`:
     "meta": {
       "precheckDiskUsageLimitPct": 85,
       "backupMarkerPath": "/opt/docker/.last-backup",
-      "backupMarkerMaxAgeSeconds": 86400
+      "backupMarkerMaxAgeSeconds": 604800
     }
   }
 }
@@ -232,6 +232,7 @@ Volitelne host pre-check parametry se drzi take v `config.local.json`:
 - `backupMarkerPath` doporucena hodnota je `/opt/docker/.last-backup`
 - `backupMarkerPath` je vypnute, dokud neni explicitne nastavene
 - `backupMarkerMaxAgeSeconds` se pouzije jen kdyz je nastavene `backupMarkerPath`
+- pro tenhle homelab je rozumna vychozi hodnota `604800` (`7` dni), protoze backup nebezi kazdy den
 - po nasazeni `2.6` je prakticky postup:
   - nechat host skript jednou vytvorit snapshot a `.last-backup`
   - pak teprve zapnout `backupMarkerPath` v `config.local.json`

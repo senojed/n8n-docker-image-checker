@@ -22,6 +22,7 @@ To prakticky znamena:
 - hardening `Run` workflow a host script uz umi i `post_check` po realnem updatu
 - hardening host script uz pri realnem updatu vytvari compose-level snapshot do `/opt/docker/.backups/`
 - hardening `Run` workflow uz ma zapnuty `backupMarkerPath=/opt/docker/.last-backup`
+- homelab policy pro `backupMarkerMaxAgeSeconds` je nastavena na `604800` (`7` dni), ne na denni backup cadence
 
 ## Nasazena test varianta
 

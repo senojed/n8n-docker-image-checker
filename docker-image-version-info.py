@@ -2,6 +2,7 @@
 import base64
 import json
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -156,6 +157,35 @@ def comparable_version(value):
     return raw
 
 
+def version_sort_key(value):
+    raw = comparable_version(value)
+    if not raw:
+        return None
+
+    parts = []
+    for token in re.split(r"([0-9]+)", raw):
+        if not token:
+            continue
+        if token.isdigit():
+            parts.append((0, int(token)))
+        else:
+            parts.append((1, token.lower()))
+
+    return tuple(parts) or None
+
+
+def version_is_newer(lhs, rhs):
+    left = version_sort_key(lhs)
+    right = version_sort_key(rhs)
+    if not left or not right:
+        return False
+
+    try:
+        return left > right
+    except TypeError:
+        return False
+
+
 def env_to_dict(env_list):
     env_map = {}
     for item in env_list or []:
@@ -245,9 +275,26 @@ def inspect_current(service):
     }
 
 
-def inspect_target(image_ref, cache):
+def is_floating_tag(image_ref):
+    tag = image_tag(image_ref)
+    return bool(tag and tag.lower() in FLOATING_TAGS)
+
+
+def should_refresh_cached_target(image_ref, cached_target, current_info):
+    if not cached_target or not is_floating_tag(image_ref):
+        return False
+
+    current_version = current_info.get("currentVersion")
+    target_version = cached_target.get("targetVersion")
+    if current_version and target_version and version_is_newer(current_version, target_version):
+        return True
+
+    return False
+
+
+def inspect_target(image_ref, cache, current_info=None):
     cached = get_cached_entry(cache, image_ref, CACHE_TTL_SECONDS)
-    if cached:
+    if cached and not should_refresh_cached_target(image_ref, cached, current_info or {}):
         return cached
 
     raw = run_command(
@@ -326,6 +373,9 @@ def build_note(current_info, target_info):
     if not target_version:
         return "Cilovou verzi se nepodarilo precist z OCI metadata, k dispozici je jen tag nebo digest."
 
+    if current_version and target_version and version_is_newer(current_version, target_version):
+        return "Aktualni container vypada novejsi nez remote target metadata. U floating tagu probehl refresh cache, ale registry muze byt pozadu."
+
     return None
 
 
@@ -359,7 +409,7 @@ def main():
         try:
             current_info = inspect_current(service)
             try:
-                target_info = inspect_target(image_ref, cache)
+                target_info = inspect_target(image_ref, cache, current_info)
             except Exception as exc:
                 error_text = str(exc)
                 if "429 Too Many Requests" in error_text or "toomanyrequests" in error_text.lower():
