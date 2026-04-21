@@ -1,0 +1,21 @@
+[Unit]
+Description=Optional wrapper for docker update apply script
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=docker-updater
+Group=docker-updater
+WorkingDirectory=/opt/docker
+ExecStart=/opt/docker/docker-update-apply.sh --dry-run calibre-web
+# This unit is only a reference snippet for manual dry-run execution.
+# The default project flow still triggers updates over restricted SSH.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/docker /var/log/docker-updates /var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

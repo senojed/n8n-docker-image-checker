@@ -7,7 +7,9 @@ Live `Codex` checker je povazovany za deprecated a nema se dal rozvijet.
 
 ## Aktualni faze
 
-Jsme ve `Phase 1 complete-ish + Phase 2.1/2.2/2.3/2.6 wired on hardened host`.
+K `2026-04-21` jsme ve stavu `hardening rollout almost closed`.
+
+Repo-first i nasazena hardening sada jsou funkcni a jadro `Phase 1` i host runtime body `2.1/2.2/2.3/2.6` jsou v praxi zavedene. Otevrene body uz nejsou o implementaci workflowu, ale hlavne o provoznim dovreni mailboxu, operator identity a host runtime hygiene.
 
 To prakticky znamena:
 
@@ -23,6 +25,28 @@ To prakticky znamena:
 - hardening host script uz pri realnem updatu vytvari compose-level snapshot do `/opt/docker/.backups/`
 - hardening `Run` workflow uz ma zapnuty `backupMarkerPath=/opt/docker/.last-backup`
 - homelab policy pro `backupMarkerMaxAgeSeconds` je nastavena na `604800` (`7` dni), ne na denni backup cadence
+
+## Stav rolloutu k 2026-04-21
+
+Aktualne nasazene workflow verze:
+
+- Checker: `6344826f-e104-4794-9864-3f9a4effa48c`
+- UI: `f7a7faf4-18d0-470d-b658-0f7529db2f1c`
+- Run: `b435baf5-36d9-414b-a903-0f1b24955754`
+
+Nasazovaci poznamky:
+
+- commit `bd35a72` je pushnuty na `origin/phase1-hardening`
+- rendered hardening workflowy byly znovu importovane do n8n pres API a aktivovane
+- lokalni `config.local.json` na tomhle workstationu pouziva operator token rezim pro operatora `honza`
+- pri importu do n8n byl misto chybejiciho credentialu `ops-smtp` pouzit existujici credential `SMTP account`
+
+Prakticky overeno:
+
+- manual run checkeru je v poradku
+- checker mail dorazi korektne
+- UI dry-run je v poradku
+- realny hardening run je v poradku
 
 ## Nasazena test varianta
 
@@ -156,17 +180,35 @@ Deploy/publish sanity po zmene workflowu:
 - po publishi ma workflow zustat `Active`
 - u checkeru overit i nejblizsi realny scheduled beh, ne jen manual
 
-## Co jeste neni uzavrene
+## Rollout closeout checklist
 
-Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
+Co uz je zavrene:
+
+- repo uz drzi jen template workflowy; `workflows/rendered/` a lokalni config zustavaji gitignored
+- `1.2` operator auth je na tomhle hostu realne nasazena pres per-operator token rezim
+- audit append do `/var/log/docker-updates/audit.jsonl` je nasazeny
+- host runtime ma lock, pre-check, snapshot a `post_check` wiring
+- repo uz ma i `host/` reference pro `2.5` dedicated SSH user a restricted `authorized_keys`
+- checker heartbeat wiring je nasazene v hardening profilu
+- checker, mail, UI dry-run i realny hardening run byly funkcne overene
+
+Co jeste neni uzavrene:
 
 - legacy `Docker Updates - Checker (Codex)` ma pri aktivaci chybu `object is not iterable`
 - to je deprecated workflow; doporuceny stav je mit ho vypnuty a dal resit jen hardening sadu
 - na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
 - `Healthchecks` check musi mit prirazeny alespon jeden notification channel; bez toho se down stav jen zobrazi v UI, ale nic se neposle
-- `1.1` SMTP je repo-first rozpracovane, ale bez realneho `ops-smtp` credentialu a technicke schranky zatim neni nasazene do n8n
-- `1.2` auth vrstva je repo-first pripravena; render generator uz bez `operatorIdentityHeader` nebo kompletni sady `operators[].token` rendered workflow nevygeneruje, ale lokalni config na tomto hostu jeste musi byt skutecne doplneny a znovu importovany do n8n
+- `1.1` SMTP jeste neni provozne uzavrene: workflowy sice jedou pres SMTP, ale v n8n zatim chybi dedikovany credential `ops-smtp` a technicka schranka; docasne je pouzity existujici `SMTP account`
+- operator identity je na tomhle hostu uzavrena jen pro lokalni token-mode setup `honza`; pro ostrejsi provozni rezim porad dava smysl rozhodnout, jestli dlouhodobe zustane per-operator token model, nebo se prejde na trusted header z reverzni/proxy vrstvy
+
+Doporucene poradi pro uplne uzavreni rollout faze:
+
+1. Zalozit technickou schranku a v n8n vytvorit dedikovany SMTP credential `ops-smtp`; pak hardening workflowy znovu publikovat s timto credential bindingem.
+2. Potvrdit cilovy provozni model operator identity: bud ponechat per-operator tokeny pro vsechny realne operatory, nebo zavest trusted header a tokeny degradovat na fallback.
+3. Na hostu doinstalovat `logrotate`, nahrat [docker-updates-audit.logrotate](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/docker-updates-audit.logrotate:1) a overit `logrotate -d`.
+4. U `Healthchecks` priradit notifikacni kanal a jednou overit alert pri zamerne nedorucenem heartbeat.
+5. Po techto provoznich krocich udelat posledni publish sanity check: published verze zustala `Active`, kriticke credentials sedi a scheduler bezi ze stejne verze jako posledni import.
 
 ## Jak to dal udrzovat
 

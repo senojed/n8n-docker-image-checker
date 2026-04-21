@@ -1,0 +1,3 @@
+# Replace the example public key with the real key used by the n8n SSH credential.
+# The forced command keeps the SSH account limited to this updater entrypoint.
+command="/opt/docker/docker-update-apply.sh $SSH_ORIGINAL_COMMAND",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLE_REPLACE_WITH_REAL_KEY n8n-docker-updater

@@ -44,6 +44,7 @@ Aktualni smer projektu je `hardened-only`; puvodni legacy `Codex` workflowy jsou
 - `docker-update-apply.sh` - host skript, ktery opravdu spousti update.
 - `docker-updates-audit.logrotate` - pripraveny `logrotate` config pro `/var/log/docker-updates/audit.jsonl`.
 - `docker-image-version-info.py` - host helper pro current/target verzi a digest bez realneho updatu.
+- `host/` - referencni host snippets pro dedicated SSH user, restricted `authorized_keys` a volitelny systemd wrapper.
 
 ## Template vs rendered
 
@@ -343,6 +344,12 @@ chmod 664 /var/log/docker-updates/audit.jsonl
 cp docker-updates-audit.logrotate /etc/logrotate.d/docker-updates-audit
 logrotate -d /etc/logrotate.d/docker-updates-audit
 ```
+
+Pro `2.5 SSH hardening` je v repu i referencni host slozka:
+
+- [host/README.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/README.md:1)
+- [host/authorized_keys.example](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/authorized_keys.example:1)
+- [host/docker-updater.service](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/docker-updater.service:1)
 
 Dalsi kroky:
 
