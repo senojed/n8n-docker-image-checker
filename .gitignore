@@ -1,4 +1,5 @@
 _work/
 config.local.json
-*.rendered.json
+.env
+workflows/rendered/
 audit.jsonl

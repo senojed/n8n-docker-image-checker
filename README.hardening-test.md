@@ -1,6 +1,6 @@
 # Docker Updates - Hardening Test
 
-Tento dokument drzi aktualni stav oddelene hardening test varianty vedle live workflowu.
+Tento dokument drzi aktualni stav oddelene hardening test varianty vedle legacy workflowu.
 
 Aktualni smer projektu je `hardened-only`.
 Live `Codex` checker je povazovany za deprecated a nema se dal rozvijet.
@@ -11,8 +11,8 @@ Jsme ve `Phase 1 complete-ish + Phase 2.1/2.2/2.3/2.6 wired on hardened host`.
 
 To prakticky znamena:
 
-- test workflowy jsou vygenerovane z repa a nasazene do n8n vedle live sady
-- UI webhook, Run webhook i host test script jsou oddelene od live varianty
+- test workflowy jsou vygenerovane z repa a nasazene do n8n vedle legacy sady
+- UI webhook, Run webhook i host test script jsou oddelene od legacy varianty
 - probehlo realne overeni mailu, UI, dry-run i ostreho updatu
 - test `Run` workflow ted vraci i korektni `400` JSON chyby pro logicky neplatne requesty
 - repo ted drzi jen template workflow JSONy bez lokalnich URL, mailu a path tokenu
@@ -32,7 +32,7 @@ Workflowy v n8n:
 - `Docker Updates - UI (Hardening Test)`
 - `Docker Updates - Run (Hardening Test)`
 
-Oddeleni od live:
+Oddeleni od legacy:
 
 - UI webhook path je lokalni hodnota z `config.local.json`
 - Run webhook path je lokalni hodnota z `config.local.json`
@@ -45,10 +45,10 @@ Repo artefakty:
 - [service-map.hardening-test.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/service-map.hardening-test.json:1)
 - [docker-update-apply.sh](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/docker-update-apply.sh:1) - repo verze s audit append logikou
 - [docker-updates-audit.logrotate](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/docker-updates-audit.logrotate:1) - pripraveny host logrotate config
-- [workflow-hardening-test-A-checker.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-A-checker.json:1) - commitnuty template
-- [workflow-hardening-test-B-ui.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-B-ui.json:1) - commitnuty template
-- [workflow-hardening-test-C-run.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflow-hardening-test-C-run.json:1) - commitnuty template
-- lokalni import do n8n se dela z `workflow-hardening-test-*.rendered.json`
+- [workflows/hardening-test/workflow-A-checker.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflows/hardening-test/workflow-A-checker.json:1) - commitnuty template
+- [workflows/hardening-test/workflow-B-ui.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflows/hardening-test/workflow-B-ui.json:1) - commitnuty template
+- [workflows/hardening-test/workflow-C-run.json](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/workflows/hardening-test/workflow-C-run.json:1) - commitnuty template
+- lokalni import do n8n se dela z `workflows/rendered/hardening-test/workflow-*.rendered.json`
 
 ## Template vs rendered
 
@@ -60,7 +60,8 @@ Hardening test vetev se ted generuje ve dvou vrstvach:
 - `checkerHeartbeatUrl` v `config.local.json` je nastaveny na self-hosted `Healthchecks`
 - `checkerHeartbeatHeaders` v `config.local.json` doplnuji `Host` header, protoze verejna ping URL je za Authelii a primo by nefungovala
 - `operators` z `config.local.json` ted slouzi i pro UI/operator context, token/header auth a audit log
-- renderovane soubory `workflow-hardening-test-*.rendered.json` se generuji lokalne a ty se importuji do n8n
+- rendered generator nove odmitne config bez realne auth vrstvy; pro import do n8n musi byt nastavene bud `operatorIdentityHeader`, nebo `token` u kazdeho operatora
+- renderovane soubory v `workflows/rendered/hardening-test/` se generuji lokalne a ty se importuji do n8n
 
 Zakladni postup:
 
@@ -159,13 +160,13 @@ Deploy/publish sanity po zmene workflowu:
 
 Tohle neni blocker pro hardening test variantu, ale zustava otevrene:
 
-- live `Docker Updates - Checker (Codex)` ma pri aktivaci chybu `object is not iterable`
-- to je deprecated live workflow; doporuceny stav je mit ho vypnuty a dal resit jen hardening sadu
+- legacy `Docker Updates - Checker (Codex)` ma pri aktivaci chybu `object is not iterable`
+- to je deprecated workflow; doporuceny stav je mit ho vypnuty a dal resit jen hardening sadu
 - na test hostu zatim neni nainstalovany balicek `logrotate`, takze rotace je pripravena konfiguracne, ale neoverena behove
 - ownership `audit.jsonl` musi zustat na SSH uctu, ktery pouziva n8n `Run` workflow; jinak beh spravne failne ve fazi `audit_log`
 - `Healthchecks` check musi mit prirazeny alespon jeden notification channel; bez toho se down stav jen zobrazi v UI, ale nic se neposle
 - `1.1` SMTP je repo-first rozpracovane, ale bez realneho `ops-smtp` credentialu a technicke schranky zatim neni nasazene do n8n
-- `1.2` auth vrstva je repo-first pripravljena, ale bez doplneni `operatorIdentityHeader` nebo `operators[].token` v lokalnim configu zatim bezi jen allow-list operatoru
+- `1.2` auth vrstva je repo-first pripravena; render generator uz bez `operatorIdentityHeader` nebo kompletni sady `operators[].token` rendered workflow nevygeneruje, ale lokalni config na tomto hostu jeste musi byt skutecne doplneny a znovu importovany do n8n
 
 ## Jak to dal udrzovat
 
@@ -176,12 +177,12 @@ Pri dalsi zmene hardening test varianty aktualizovat:
 3. `node generate-workflows.mjs --template-only --config service-map.hardening-test.json`
 4. `node generate-workflows.mjs --config service-map.hardening-test.json`
 5. tento soubor
-6. jen prislusny test workflow v n8n, bez zasahu do live sady
+6. jen prislusny test workflow v n8n, bez zasahu do legacy sady
 
 ## Posledni dulezite zmeny
 
 - opraven `Build HTML` v test UI workflowu
-- doplnena separace test `Run` workflowu proti live scriptu
+- doplnena separace test `Run` workflowu proti legacy scriptu
 - opravena validace test `Run` webhooku tak, aby vracela korektni `400` JSON odpovedi
 - dodelana separace template vs rendered workflow artefaktu a lokalni konfigurace
 - nasazen audit log mimo n8n executions na test host vcetne operator contextu

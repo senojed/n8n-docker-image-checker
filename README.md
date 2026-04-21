@@ -3,7 +3,7 @@
 Tahle slozka obsahuje oddelenou, bezpecnejsi variantu Docker update automatizace pro n8n. Puvodni Claude Code rozpracovani zustava vedle jako reference a neni timhle dotcene.
 
 Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-test.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/README.hardening-test.md:1).
-Aktualni smer projektu je `hardened-only`; puvodni live `Codex` workflowy jsou uz jen legacy reference.
+Aktualni smer projektu je `hardened-only`; puvodni legacy `Codex` workflowy jsou uz jen legacy reference.
 
 ## Co tato varianta dela
 
@@ -18,7 +18,7 @@ Aktualni smer projektu je `hardened-only`; puvodni live `Codex` workflowy jsou u
 ## Proc je to bezpecnejsi
 
 - n8n nepousti `docker compose` primo z verejneho webhooku.
-- Update muze spustit jen allowlist sluzeb z `allowed-services.txt`.
+- Update muze spustit jen allowlist sluzeb z `workflows/legacy/allowed-services.txt`.
 - `Dry-run` overi vyber, allowlist a pritomnost sluzeb v compose bez `pull/up`.
 - `Dry-run` neposila mail, vysledek vraci jen do UI.
 - Realny update posle vysledkovy mail jak pro `OK`, tak pro `FAIL`.
@@ -30,17 +30,17 @@ Aktualni smer projektu je `hardened-only`; puvodni live `Codex` workflowy jsou u
 - `plan.md` - lidsky plan a shrnuti.
 - `README.hardening-test.md` - aktualni stav, overeni a otevrene body pro oddelenou hardening test variantu.
 - `service-map.json` - zdroj pravdy pro image -> service mapu a metadata sluzeb.
-- `service-map.hardening-test.json` - overlay config pro oddelenou test variantu vedle live workflowu.
+- `service-map.hardening-test.json` - overlay config pro oddelenou test variantu vedle legacy workflowu.
 - `config.local.example.json` - sablona pro lokalni neveřejnou konfiguraci.
 - `generate-workflows.mjs` - generator workflow JSONu.
-- `workflow-A-checker.json` - commitnuty template checker workflowu.
-- `workflow-B-ui.json` - commitnuty template UI workflowu.
-- `workflow-C-run.json` - commitnuty template run workflowu.
-- `workflow-hardening-test-A-checker.json` - commitnuty template checker workflowu pro hardening test.
-- `workflow-hardening-test-B-ui.json` - commitnuty template UI workflowu pro hardening test.
-- `workflow-hardening-test-C-run.json` - commitnuty template run workflowu pro hardening test.
-- `allowed-services.txt` - allowlist pro host skript.
-- `allowed-services.hardening-test.txt` - stejne data pro test variantu, vygenerovane separatne.
+- `workflows/legacy/workflow-A-checker.json` - commitnuty template checker workflowu.
+- `workflows/legacy/workflow-B-ui.json` - commitnuty template UI workflowu.
+- `workflows/legacy/workflow-C-run.json` - commitnuty template run workflowu.
+- `workflows/hardening-test/workflow-A-checker.json` - commitnuty template checker workflowu pro hardening test.
+- `workflows/hardening-test/workflow-B-ui.json` - commitnuty template UI workflowu pro hardening test.
+- `workflows/hardening-test/workflow-C-run.json` - commitnuty template run workflowu pro hardening test.
+- `workflows/legacy/allowed-services.txt` - allowlist pro host skript.
+- `workflows/hardening-test/allowed-services.txt` - stejne data pro test variantu, vygenerovane separatne.
 - `docker-update-apply.sh` - host skript, ktery opravdu spousti update.
 - `docker-updates-audit.logrotate` - pripraveny `logrotate` config pro `/var/log/docker-updates/audit.jsonl`.
 - `docker-image-version-info.py` - host helper pro current/target verzi a digest bez realneho updatu.
@@ -49,8 +49,8 @@ Aktualni smer projektu je `hardened-only`; puvodni live `Codex` workflowy jsou u
 
 Repo od bodu `1.5` drzi jen bezpecne template workflowy bez lokalnich tokenu a adres.
 
-- commitnute `workflow-*.json` jsou template artefakty s placeholdery
-- lokalni `workflow-*.rendered.json` se generuji z `config.local.json`
+- commitnute `workflows/legacy/*.json` a `workflows/hardening-test/*.json` jsou template artefakty s placeholdery
+- lokalni `workflows/rendered/**/*.rendered.json` se generuji z `config.local.json`
 - `config.local.json` je gitignored a drzi lokalni hodnoty jako:
   - `baseUrl`
   - `mailTo`
@@ -94,7 +94,7 @@ Bez `config.local.json` generator pro rendered vystup skonci chybou. To je zamer
 Mail ma jit z technicke schranky pres SMTP, ne z osobniho Gmail OAuth.
 Odesilatel se bere z `config.local.json` jako `mailFrom`.
 
-Do n8n se maji importovat renderovane soubory `workflow-*.rendered.json`, ne template `workflow-*.json`.
+Do n8n se maji importovat renderovane soubory z `workflows/rendered/`, ne template JSONy z `workflows/legacy/` a `workflows/hardening-test/`.
 
 ## Draft vs published v n8n
 
@@ -126,7 +126,7 @@ Deploy/publish sanity po kazde zmene:
 
 ## Live vs hardening test
 
-Legacy live workflowy:
+Legacy workflowy:
 
 - `Docker Updates - Checker (Codex)`
 - `Docker Updates - UI (Codex)`
@@ -173,6 +173,7 @@ Doporucene nastaveni credentialu v n8n:
 - `Run` workflow uz nefallbackuje na prvniho operatora. `operator` je povinny vzdy.
 - `1.2` repo-first umi dve identity vrstvy: trusted header pres `meta.operatorIdentityHeader`, nebo per-operator token pres `meta.operators[].token`.
 - `meta.operators` muze byt bud jednoduchy seznam jmen, nebo pole objektu `{ id, label, token, identities[] }`.
+- Rendered generator bez auth vrstvy pro operatora skonci chybou. Pro produkcni import musi byt v `config.local.json` nastavene bud `meta.operatorIdentityHeader`, nebo `meta.operators[].token` pro kazdeho operatora.
 - Host skript appenduje audit do `meta.auditLogPath`, defaultne `/var/log/docker-updates/audit.jsonl`.
 - Audit soubor i adresar musi byt zapisovatelne pro SSH ucet z n8n credentialu, jinak `Run` skonci chybou s `phase: audit_log`.
 - Host skript pouziva execution lock v `${COMPOSE_DIR}/.docker-update-apply.lock`, takze druhy soubezny beh skonci cistou chybou `phase: lock`.
@@ -346,7 +347,7 @@ logrotate -d /etc/logrotate.d/docker-updates-audit
 Dalsi kroky:
 
 1. Vytvor a vypln `config.local.json`.
-2. Vygeneruj `workflow-*.rendered.json`.
+2. Vygeneruj renderovane JSONy do `workflows/rendered/`.
 3. Zkopiruj aktualni `docker-update-apply.sh` na host, pokud ma pouzivat audit log a nove argumenty `--operator` / `--workflow-execution-id`.
 4. V n8n vytvor odpovidajici credentialy.
 5. V n8n importuj renderovane workflow JSONy.

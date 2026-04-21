@@ -18,8 +18,8 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 
 **Změnit v:**
 - [generate-workflows.mjs](generate-workflows.mjs)
-- [workflow-A-checker.json](workflow-A-checker.json), node `Send Mail` (typ `n8n-nodes-base.emailSend`)
-- [workflow-C-run.json](workflow-C-run.json), node `Send Result Mail` (typ `n8n-nodes-base.emailSend`)
+- [workflows/legacy/workflow-A-checker.json](workflows/legacy/workflow-A-checker.json), node `Send Mail` (typ `n8n-nodes-base.emailSend`)
+- [workflows/legacy/workflow-C-run.json](workflows/legacy/workflow-C-run.json), node `Send Result Mail` (typ `n8n-nodes-base.emailSend`)
 
 **Konkrétně:** Vyměnit oba Gmail nody za `n8n-nodes-base.emailSend` (SMTP). V n8n založit credential `ops-smtp` s údaji technického mailboxu (např. `ops@customer.tld`). Volby providera: zákazníkův vlastní SMTP relay, Mailgun, Postmark, Resend, Microsoft 365 SMTP — pro plán agnostické, rozhodne se při nasazení.
 
@@ -32,13 +32,13 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 
 ### 1.2 Identita schvalovatele a token hygiene
 
-**Problém:** Tailscale ACL omezuje *kdo se dostane k webhooku*, ale n8n na straně workflow neví, *kdo konkrétně* update schválil. Současné tajné path tokeny v URL jsou statické, sdílené, a navíc jsou commitnuté v `workflow-C-run.json` (viz bod 1.5). Pro audit trail (bod 1.4) je potřeba znát identitu.
+**Problém:** Tailscale ACL omezuje *kdo se dostane k webhooku*, ale n8n na straně workflow neví, *kdo konkrétně* update schválil. Současné tajné path tokeny v URL jsou statické, sdílené, a navíc jsou commitnuté v `workflows/legacy/workflow-C-run.json` (viz bod 1.5). Pro audit trail (bod 1.4) je potřeba znát identitu.
 
 **Stav 2026-04-17:** Repo-first část je rozdělená na dvě vrstvy. `operator` je už povinný a generátor umí trusted header (`meta.operatorIdentityHeader`) i per-operator token fallback (`meta.operators[].token`). Nasazení ale ještě vyžaduje doplnit jednu z těchto variant do lokálního configu a přegenerovat rendered workflowy.
 
 **Změnit v:**
-- [workflow-B-ui.json](workflow-B-ui.json), HTML generátor — přidat pole `operator`
-- [workflow-C-run.json](workflow-C-run.json), node `Webhook Run` a `Validate Selection`
+- [workflows/legacy/workflow-B-ui.json](workflows/legacy/workflow-B-ui.json), HTML generátor — přidat pole `operator`
+- [workflows/legacy/workflow-C-run.json](workflows/legacy/workflow-C-run.json), node `Webhook Run` a `Validate Selection`
 
 **Konkrétně:**
 1. V UI (workflow B) přidat dropdown nebo text input `operator` s předdefinovaným seznamem jmen (konfigurace per host).
@@ -59,7 +59,7 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 
 **Změnit v:**
 - [docker-update-apply.sh](docker-update-apply.sh) — výstupní formát
-- [workflow-C-run.json](workflow-C-run.json), node `Build Result` — parser
+- [workflows/legacy/workflow-C-run.json](workflows/legacy/workflow-C-run.json), node `Build Result` — parser
 
 **Konkrétně:**
 1. Host skript bude vypisovat poslední řádek jako jeden řádek JSONu, prefixovaný `__RESULT_JSON__:`, se schématem:
@@ -83,7 +83,7 @@ Bez těchto bodů se to k zákazníkovi pustit nemá.
 **Problém:** Dnes jde všechno dohledat jen v n8n executions. To je ephemeral (retention, restore po failu, export). Zákazník se bude ptát: kdo, kdy, co, předchozí a nový digest, výsledek.
 
 **Změnit v:**
-- [workflow-C-run.json](workflow-C-run.json) — nový node za `SSH Apply Update`
+- [workflows/legacy/workflow-C-run.json](workflows/legacy/workflow-C-run.json) — nový node za `SSH Apply Update`
 - [docker-update-apply.sh](docker-update-apply.sh) — emit `prev_digests` (viz 1.3 a 1.6)
 
 **Konkrétně:** Po úspěšném i neúspěšném běhu appendovat jeden řádek JSON-lines do perzistentního souboru na hostu, typicky `/var/log/docker-updates/audit.jsonl`. Schéma:
@@ -109,8 +109,8 @@ Zápis dělá host skript (nejjednodušší) pod ownership dedicated usera z bod
 
 **Konkrétně:**
 1. Generator přijme konfiguraci z lokálního `config.local.json` (gitignored), který obsahuje `operators[]`, `mailTo`, webhook path tokeny, host, SSH cred jméno.
-2. Výstupní `workflow-*.json` se rozdělí na **template** (commitnuté, bez secretů, s `__PLACEHOLDER__`) a **rendered** (gitignored, import do n8n).
-3. Do `.gitignore`: `workflow-*.rendered.json`, `config.local.json`, `audit.jsonl`.
+2. Výstupní workflow JSONy se rozdělí na **template** (`workflows/legacy/*.json`, `workflows/hardening-test/*.json`) a **rendered** (`workflows/rendered/**/*.rendered.json`, gitignored, import do n8n).
+3. Do `.gitignore`: `workflows/rendered/`, `config.local.json`, `audit.jsonl`.
 4. README vysvětlí workflow: `node generate-workflows.mjs` → rendered → import do n8n.
 
 **Hotovo když:**
@@ -149,7 +149,7 @@ Hodnoty se pak vypíšou do `__RESULT_JSON__` (bod 1.3) a slouží jako vstup pr
 
 **Problém:** Pokud n8n spadne, scheduler neběží, ale nikdo to nezjistí. Watchdog uvnitř stejné n8n instance je k ničemu — je down spolu s ní.
 
-**Změnit v:** infrastruktura hostu, ne repo. [workflow-A-checker.json](workflow-A-checker.json) jen emituje heartbeat.
+**Změnit v:** infrastruktura hostu, ne repo. [workflows/legacy/workflow-A-checker.json](workflows/legacy/workflow-A-checker.json) jen emituje heartbeat.
 
 **Konkrétně:**
 1. Na konci workflow A přidat HTTP Request node, který zavolá externí heartbeat URL (healthchecks.io / self-hosted Uptime Kuma / vlastní cron-watcher). Volba providera je agnostická.
@@ -246,7 +246,7 @@ flock -n 9 || { echo '__RESULT_JSON__:{"status":"error","phase":"lock","summary"
 
 **Problém:** AI řekne „safe/caution/manual" — ale u zákazníka nemůže být jediným zdrojem pravdy, protože je nedeterministická a její verdict nejde auditovat.
 
-**Změnit v:** [workflow-A-checker.json](workflow-A-checker.json), node `Enrich Updates` (před `OpenAI AI Review`) a `Build Mail`.
+**Změnit v:** [workflows/legacy/workflow-A-checker.json](workflows/legacy/workflow-A-checker.json), node `Enrich Updates` (před `OpenAI AI Review`) a `Build Mail`.
 
 **Konkrétně:** Před AI spustit pravidlový scorer se vstupem z `service-map.json`:
 - major version bump (1.x → 2.x) → `manual`
@@ -314,11 +314,11 @@ Tyto body odlišují „slušně provozované" od „sofistikovaně provozované
 **Změnit v:** [service-map.json](service-map.json), compose soubor na hostu, [generate-workflows.mjs](generate-workflows.mjs).
 
 **Konkrétně:** Je to **datová migrace**, ne workflow úprava. Dva podkroky, kdykoliv odděleně:
-1. Migrace compose: pro každou službu z `allowed-services.txt` zjistit aktuální reálný tag a zapsat ho do compose natvrdo (`image: foo/bar:1.35.4`). Toto je ruční diff-review krok, nelze automatizovat bez rizika.
+1. Migrace compose: pro každou službu z `workflows/legacy/allowed-services.txt` zjistit aktuální reálný tag a zapsat ho do compose natvrdo (`image: foo/bar:1.35.4`). Toto je ruční diff-review krok, nelze automatizovat bez rizika.
 2. Upravit checker workflow: místo „je jiný digest?" se ptá „je novější semver tag?" (přes registry API nebo Renovate). Update návrh pak obsahuje konkrétní `1.35.4 → 1.35.6` s release notes diffem, ne jen „latest se pohnul".
 
 **Hotovo když:**
-- V `allowed-services.txt` není žádná služba s floating tagem na hostu (kontrola: `docker compose config | grep -E ':(latest|release|stable)'` je prázdné).
+- V `workflows/legacy/allowed-services.txt` není žádná služba s floating tagem na hostu (kontrola: `docker compose config | grep -E ':(latest|release|stable)'` je prázdné).
 - Update návrh v mailu obsahuje `from → to` konkrétní verze, ne jen „new digest".
 
 ---
@@ -334,7 +334,7 @@ Tyto body odlišují „slušně provozované" od „sofistikovaně provozované
 engine/               # generator, host skript, helper — sdílené
 customers/<name>/
   service-map.json
-  allowed-services.txt
+  workflows/legacy/allowed-services.txt
   host-policy.json    # SSH target, operators, mail recipients
   config.local.json   # secrets (gitignored)
 ```

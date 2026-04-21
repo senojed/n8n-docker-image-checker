@@ -14,10 +14,10 @@
       "run": "Docker Updates - Run (Hardening Test)"
     },
     "artifactNames": {
-      "allowedServices": "allowed-services.hardening-test.txt",
-      "checker": "workflow-hardening-test-A-checker.json",
-      "ui": "workflow-hardening-test-B-ui.json",
-      "run": "workflow-hardening-test-C-run.json"
+      "allowedServices": "workflows/hardening-test/allowed-services.txt",
+      "checker": "workflows/hardening-test/workflow-A-checker.json",
+      "ui": "workflows/hardening-test/workflow-B-ui.json",
+      "run": "workflows/hardening-test/workflow-C-run.json"
     }
   }
 }

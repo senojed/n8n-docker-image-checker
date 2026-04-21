@@ -130,6 +130,38 @@ function isUnsetLocalValue(value) {
   return /^__.+__$/.test(trimmed);
 }
 
+function normalizeLocalOperatorEntry(entry) {
+  if (typeof entry === 'string') {
+    const id = entry.trim();
+    if (isUnsetLocalValue(id)) {
+      return null;
+    }
+
+    return {
+      id,
+      token: null,
+    };
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+
+  const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+  if (isUnsetLocalValue(id)) {
+    return null;
+  }
+
+  const token = typeof entry.token === 'string' && entry.token.trim() && !isUnsetLocalValue(entry.token)
+    ? entry.token.trim()
+    : null;
+
+  return {
+    id,
+    token,
+  };
+}
+
 function normalizeHeaderMap(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -186,6 +218,29 @@ function validateRenderedConfig(config, configPath) {
     missingKeys.push('operators[0]');
   }
 
+  const normalizedOperators = Array.isArray(config.meta?.operators)
+    ? config.meta.operators
+        .map((operator) => normalizeLocalOperatorEntry(operator))
+        .filter(Boolean)
+    : [];
+  const trustedOperatorHeader =
+    typeof config.meta?.operatorIdentityHeader === 'string' &&
+    config.meta.operatorIdentityHeader.trim() &&
+    !isUnsetLocalValue(config.meta.operatorIdentityHeader)
+      ? config.meta.operatorIdentityHeader.trim()
+      : null;
+  const operatorsWithoutToken = normalizedOperators
+    .filter((operator) => !operator.token)
+    .map((operator) => operator.id);
+
+  if (!trustedOperatorHeader && !normalizedOperators.some((operator) => operator.token)) {
+    missingKeys.push('operatorIdentityHeader or operators[].token');
+  }
+
+  if (!trustedOperatorHeader && operatorsWithoutToken.length) {
+    missingKeys.push(`operators[].token for: ${operatorsWithoutToken.join(', ')}`);
+  }
+
   if (missingKeys.length > 0) {
     throw new Error(
       `Missing required rendered config values for ${path.basename(configPath)}: ${missingKeys.join(', ')}. ` +
@@ -197,6 +252,18 @@ function validateRenderedConfig(config, configPath) {
 }
 
 function renderedArtifactName(filename) {
+  if (filename.includes('workflows/legacy/')) {
+    return filename
+      .replace('workflows/legacy/', 'workflows/rendered/legacy/')
+      .replace(/\.json$/, '.rendered.json');
+  }
+
+  if (filename.includes('workflows/hardening-test/')) {
+    return filename
+      .replace('workflows/hardening-test/', 'workflows/rendered/hardening-test/')
+      .replace(/\.json$/, '.rendered.json');
+  }
+
   if (!filename.endsWith('.json')) {
     return filename;
   }
@@ -226,10 +293,10 @@ const workflowNames = meta.workflowNames || {
   run: 'Docker Updates - Run (Codex)',
 };
 const artifactNames = meta.artifactNames || {
-  allowedServices: 'allowed-services.txt',
-  checker: 'workflow-A-checker.json',
-  ui: 'workflow-B-ui.json',
-  run: 'workflow-C-run.json',
+  allowedServices: 'workflows/legacy/allowed-services.txt',
+  checker: 'workflows/legacy/workflow-A-checker.json',
+  ui: 'workflows/legacy/workflow-B-ui.json',
+  run: 'workflows/legacy/workflow-C-run.json',
 };
 const checkerTriggerMode = meta.checkerTriggerMode === 'manual' ? 'manual' : 'schedule';
 const checkerHeartbeatUrl = isUnsetLocalValue(meta.checkerHeartbeatUrl) ? null : meta.checkerHeartbeatUrl;
@@ -470,12 +537,11 @@ function buildUiUrl(operatorEntry) {
     return baseUrl;
   }
 
-  const url = new URL(baseUrl);
-  url.searchParams.set('operator', entry.id);
+  const params = ['operator=' + encodeURIComponent(entry.id)];
   if (entry.token) {
-    url.searchParams.set('token', entry.token);
+    params.push('token=' + encodeURIComponent(entry.token));
   }
-  return url.toString();
+  return baseUrl + (baseUrl.includes('?') ? '&' : '?') + params.join('&');
 }
 
 function buildVersionInspectCommand(updates) {
@@ -2541,6 +2607,7 @@ if (printOnly) {
 }
 
 for (const [filename, content] of Object.entries(artifacts)) {
+  await fs.mkdir(path.dirname(path.join(__dirname, filename)), { recursive: true });
   await fs.writeFile(path.join(__dirname, filename), content);
 }
 
