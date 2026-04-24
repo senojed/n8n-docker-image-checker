@@ -2219,7 +2219,7 @@ function checkerProductionExecutionNode() {
       conditions: {
         boolean: [
           {
-            value1: '={{ (($execution && $execution.mode) || ($exec && $exec.mode) || "") === "trigger" }}',
+            value1: '={{ ["production", "trigger"].includes((($execution && $execution.mode) || ($exec && $exec.mode) || "").toLowerCase()) }}',
             operation: 'equal',
             value2: true,
           },
