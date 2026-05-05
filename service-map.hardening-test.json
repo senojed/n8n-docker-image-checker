@@ -1,17 +1,17 @@
 {
   "extends": "./service-map.json",
   "meta": {
-    "variantName": "Hardening Test",
+    "variantName": "Dataserver",
     "sshScriptPath": "/opt/docker/docker-update-apply.phase1.sh",
-    "uiTitle": "Docker Updates - Hardening Test",
-    "uiSubtitle": "Hardening test varianta oddelena od live workflowu",
-    "uiHeading": "Docker Updates - UI (Hardening Test)",
-    "mailHeading": "Docker updates - Hardening Test",
+    "uiTitle": "Docker Updates - Dataserver",
+    "uiSubtitle": "Bezpecny update flow pro dataserver",
+    "uiHeading": "Docker Updates - UI (Dataserver)",
+    "mailHeading": "Docker updates - Dataserver",
     "checkerTriggerMode": "schedule",
     "workflowNames": {
-      "checker": "Docker Updates - Checker (Hardening Test)",
-      "ui": "Docker Updates - UI (Hardening Test)",
-      "run": "Docker Updates - Run (Hardening Test)"
+      "checker": "Docker Updates - Checker (Dataserver)",
+      "ui": "Docker Updates - UI (Dataserver)",
+      "run": "Docker Updates - Run (Dataserver)"
     },
     "artifactNames": {
       "allowedServices": "workflows/hardening-test/allowed-services.txt",

@@ -1,0 +1,318 @@
+{
+  "extends": "./service-map.json",
+  "meta": {
+    "variantName": "Homeassistant",
+    "sshScriptPath": "/opt/docker-updates/docker-update-apply.sh",
+    "sshInspectScriptPath": "/opt/docker-updates/docker-image-version-info.py",
+    "sshAllowedServicesPath": "/opt/docker-updates/allowed-services.txt",
+    "auditLogPath": "/var/log/docker-updates/audit.jsonl",
+    "composeFile": "/opt/docker-compose.yaml",
+    "operatorTokenInUiUrl": false,
+    "uiTitle": "Docker Updates - Homeassistant",
+    "uiSubtitle": "Bezpecny update flow pro Homeassistant server",
+    "uiHeading": "Docker Updates - UI (Homeassistant)",
+    "mailHeading": "Docker updates - Homeassistant",
+    "checkerTriggerMode": "schedule",
+    "tailscaleNote": "Odkaz funguje ze zarizeni s pristupem k n8n na dataserveru.",
+    "workflowNames": {
+      "checker": "Docker Updates - Checker (Homeassistant)",
+      "ui": "Docker Updates - UI (Homeassistant)",
+      "run": "Docker Updates - Run (Homeassistant)"
+    },
+    "artifactNames": {
+      "allowedServices": "workflows/homeassistant/allowed-services.txt",
+      "checker": "workflows/homeassistant/workflow-A-checker.json",
+      "ui": "workflows/homeassistant/workflow-B-ui.json",
+      "run": "workflows/homeassistant/workflow-C-run.json"
+    }
+  },
+  "services": [
+    {
+      "service": "backrest",
+      "label": "Backrest",
+      "image": "garethgeorge/backrest:latest",
+      "releaseUrl": "https://github.com/garethgeorge/backrest/releases",
+      "riskClass": "high",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Zalohovaci sluzba pro /opt.",
+        "Update je vhodne delat mimo aktivni backup okno."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:9898/",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "diun",
+      "label": "Diun",
+      "image": "crazymax/diun:latest",
+      "releaseUrl": "https://github.com/crazy-max/diun/releases",
+      "riskClass": "low",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": false,
+      "hasDatabase": false,
+      "notes": [
+        "Sleduje Docker image updaty a posila notifikace."
+      ],
+      "healthCheck": {
+        "type": "docker",
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "esphome",
+      "label": "ESPHome",
+      "image": "esphome/esphome",
+      "releaseUrl": "https://github.com/esphome/esphome/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Spravuje ESPHome konfigurace a firmware.",
+        "Update radeji delat s vedomim, ze muze zmenit build/runtime chovani."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:6052/",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "grafana",
+      "label": "Grafana",
+      "image": "grafana/grafana-enterprise",
+      "releaseUrl": "https://github.com/grafana/grafana/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Dashboardy jsou persistovane a provisioning je ulozeny v /opt/grafana."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:3000/api/health",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "hass-configurator",
+      "label": "HASS Configurator",
+      "image": "causticlab/hass-configurator-docker",
+      "releaseUrl": "https://github.com/causticlab/hass-configurator-docker",
+      "riskClass": "low",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": false,
+      "hasDatabase": false,
+      "notes": [
+        "Pomocne UI pro editaci konfigurace."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:3218/",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "homeassistant",
+      "label": "Home Assistant",
+      "image": "ghcr.io/home-assistant/home-assistant:stable",
+      "releaseUrl": "https://github.com/home-assistant/core/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Centralni domaci automatizace.",
+        "Update muze ovlivnit integrace, custom components, YAML konfiguraci a automatizace."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8123/",
+        "expectStatus": 200,
+        "timeoutSeconds": 180,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "influxdb",
+      "label": "InfluxDB",
+      "image": "influxdb:latest",
+      "releaseUrl": "https://github.com/influxdata/influxdb/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": true,
+      "notes": [
+        "Drzi historicka data pro Home Assistant a Grafanu.",
+        "Update delat opatrne kvuli datovemu ulozisti a kompatibilite."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8086/health",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "mosquitto",
+      "label": "Mosquitto MQTT",
+      "image": "eclipse-mosquitto",
+      "releaseUrl": "https://github.com/eclipse-mosquitto/mosquitto/releases",
+      "riskClass": "high",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "MQTT broker pro Home Assistant, Zigbee2MQTT a Node-RED.",
+        "Update muze docasne odpojit automatizace a senzory."
+      ],
+      "healthCheck": {
+        "type": "docker",
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "nodered",
+      "label": "Node-RED",
+      "image": "nodered/node-red",
+      "releaseUrl": "https://github.com/node-red/node-red/releases",
+      "riskClass": "high",
+      "defaultVerdict": "manual_review",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Bezi v nem realne domaci automatizace vcetne MQTT flow.",
+        "Update muze ovlivnit nody nebo runtime chovani flow."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:1880/",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "portainer",
+      "label": "Portainer",
+      "image": "portainer/portainer-ce",
+      "releaseUrl": "https://github.com/portainer/portainer/releases",
+      "riskClass": "medium",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Spravcovske UI pro Docker."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:9000/api/status",
+        "expectStatus": 200,
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "scrutiny-collector",
+      "label": "Scrutiny Collector",
+      "image": "ghcr.io/analogj/scrutiny:master-collector",
+      "releaseUrl": "https://github.com/AnalogJ/scrutiny/releases",
+      "riskClass": "low",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": false,
+      "hasDatabase": false,
+      "notes": [
+        "Odesila S.M.A.R.T. data na Scrutiny server."
+      ],
+      "healthCheck": {
+        "type": "docker",
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "tasmoadmin",
+      "label": "TasmoAdmin",
+      "image": "ghcr.io/tasmoadmin/tasmoadmin",
+      "releaseUrl": "https://github.com/TasmoAdmin/TasmoAdmin/releases",
+      "riskClass": "low",
+      "defaultVerdict": "safe",
+      "defaultSelected": true,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Pomocne UI pro Tasmota zarizeni."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:9990/",
+        "expectStatus": [200, 302],
+        "timeoutSeconds": 90,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    },
+    {
+      "service": "zigbee2mqtt",
+      "label": "Zigbee2MQTT",
+      "image": "koenkk/zigbee2mqtt",
+      "releaseUrl": "https://github.com/Koenkk/zigbee2mqtt/releases",
+      "riskClass": "high",
+      "defaultVerdict": "caution",
+      "defaultSelected": false,
+      "stateful": true,
+      "hasDatabase": false,
+      "notes": [
+        "Zigbee bridge pro domaci senzory a ovladace.",
+        "Update muze docasne ovlivnit dostupnost Zigbee site."
+      ],
+      "healthCheck": {
+        "type": "http",
+        "url": "http://127.0.0.1:8099/",
+        "expectStatus": 200,
+        "timeoutSeconds": 120,
+        "intervalSeconds": 5
+      },
+      "autoInclude": []
+    }
+  ]
+}

@@ -15,6 +15,8 @@ const templateMetaPlaceholders = {
   precheckDiskUsageLimitPct: '__PRECHECK_DISK_USAGE_LIMIT_PCT__',
   backupMarkerPath: '__BACKUP_MARKER_PATH__',
   backupMarkerMaxAgeSeconds: '__BACKUP_MARKER_MAX_AGE_SECONDS__',
+  composeDir: '__COMPOSE_DIR__',
+  composeFile: '__COMPOSE_FILE__',
   uiPath: '__UI_PATH__',
   runPath: '__RUN_PATH__',
   operators: [
@@ -261,6 +263,12 @@ function renderedArtifactName(filename) {
   if (filename.includes('workflows/hardening-test/')) {
     return filename
       .replace('workflows/hardening-test/', 'workflows/rendered/hardening-test/')
+      .replace(/\.json$/, '.rendered.json');
+  }
+
+  if (filename.includes('workflows/homeassistant/')) {
+    return filename
+      .replace('workflows/homeassistant/', 'workflows/rendered/homeassistant/')
       .replace(/\.json$/, '.rendered.json');
   }
 
@@ -538,7 +546,7 @@ function buildUiUrl(operatorEntry) {
   }
 
   const params = ['operator=' + encodeURIComponent(entry.id)];
-  if (entry.token) {
+  if (entry.token && META.operatorTokenInUiUrl !== false) {
     params.push('token=' + encodeURIComponent(entry.token));
   }
   return baseUrl + (baseUrl.includes('?') ? '&' : '?') + params.join('&');
@@ -593,6 +601,7 @@ function buildVersionDetails(update, metadata) {
   const targetDigest = metadata?.targetDigest || null;
   const currentDigestShort = metadata?.currentDigestShort || shortDigest(currentDigest);
   const targetDigestShort = metadata?.targetDigestShort || shortDigest(targetDigest);
+  const targetDigestIsLocalFallback = metadata?.targetDigestSource === 'local-image';
 
   const currentText = selectVersionText(currentVersion, metadata?.currentImageRef || update.image);
   const targetText = selectVersionText(targetVersion, update.image);
@@ -608,10 +617,20 @@ function buildVersionDetails(update, metadata) {
   const comparableCurrentVersion = comparableVersion(currentVersion);
   const comparableTargetVersion = comparableVersion(targetVersion);
   if (!metadata?.error) {
-    if (currentDigest && targetDigest) {
+    if (
+      currentDigest &&
+      targetDigest &&
+      !(
+        targetDigestIsLocalFallback &&
+        comparableTargetVersion &&
+        (!comparableCurrentVersion || comparableCurrentVersion !== comparableTargetVersion)
+      )
+    ) {
       hasPendingUpdate = currentDigest !== targetDigest;
     } else if (comparableCurrentVersion && comparableTargetVersion) {
       hasPendingUpdate = comparableCurrentVersion !== comparableTargetVersion;
+    } else if (targetDigestIsLocalFallback && comparableTargetVersion && !comparableCurrentVersion) {
+      hasPendingUpdate = true;
     } else if (currentText !== 'nezjisteno' && targetText !== 'nezjisteno') {
       hasPendingUpdate = currentText !== targetText;
     }
@@ -655,7 +674,11 @@ function enrichUpdatesWithVersionInfo(prepared, versionPayload) {
       label: update.label,
       image: update.image,
       reason: update.metadataError,
+      kind: /429 Too Many Requests|toomanyrequests|unauthenticated pull rate limit|rate limit/i.test(update.metadataError)
+        ? 'registry_rate_limit'
+        : 'metadata_error',
     }));
+  const actionableInspectionIssues = inspectionIssues.filter((issue) => issue.kind !== 'registry_rate_limit');
 
   const updates = enrichedUpdates.filter((update) => update.hasPendingUpdate);
 
@@ -686,7 +709,7 @@ function enrichUpdatesWithVersionInfo(prepared, versionPayload) {
     aiContext,
     inspectionIssues,
     mappedCount: updates.length,
-    notifyCount: updates.length + inspectionIssues.length,
+    notifyCount: updates.length + actionableInspectionIssues.length,
     versionLookupError: versionPayload?.error || null,
   };
 }
@@ -873,6 +896,46 @@ return [{
 }];
 `.trim();
 
+const uiSnapshotCode = `
+${sharedRuntime}
+const webhookRequest = $input.first().json || {};
+const requestQuery = webhookRequest.query && typeof webhookRequest.query === 'object' && !Array.isArray(webhookRequest.query)
+  ? webhookRequest.query
+  : {};
+const token = typeof requestQuery.snapshot === 'string' ? requestQuery.snapshot.trim() : '';
+
+function decodeSnapshot(value) {
+  if (!value) return null;
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+    const parsed = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    if (!parsed || parsed.schema !== 1 || !Array.isArray(parsed.updates)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const snapshot = decodeSnapshot(token);
+if (!snapshot) {
+  return [{ json: { useSnapshot: false } }];
+}
+
+return [{
+  json: {
+    ...snapshot,
+    useSnapshot: true,
+    fromSnapshot: true,
+    snapshotAgeSeconds: snapshot.createdAt
+      ? Math.max(0, Math.floor((Date.now() - Date.parse(snapshot.createdAt)) / 1000))
+      : null,
+  },
+}];
+`.trim();
+
 const checkerBuildCode = `
 ${sharedRuntime}
 const data = $input.first().json;
@@ -913,17 +976,58 @@ const mappedRows = data.updates.map(renderUpdateRow).join('');
 const unknownRows = (data.unknownUpdates || []).map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fca5a5"><code>' + escapeHtml(item.image) + '</code> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
-const issueRows = (data.inspectionIssues || []).map((item) =>
+const rateLimitIssues = (data.inspectionIssues || []).filter((item) => item.kind === 'registry_rate_limit');
+const metadataIssues = (data.inspectionIssues || []).filter((item) => item.kind !== 'registry_rate_limit');
+const issueRows = metadataIssues.map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fde68a"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
+const rateLimitNotice = rateLimitIssues.length
+  ? '<div style="margin-top:20px;padding:14px 16px;background:#422006;border:1px solid #92400e;border-radius:12px;color:#fde68a"><strong>Docker Hub rate limit:</strong> metadata se nepodarilo nacist pro ' +
+      escapeHtml(String(rateLimitIssues.length)) + ' sluzeb. Update flow muze pokracovat; detail verzi se doplni po uvolneni limitu nebo po Docker loginu na hostu.<div style="margin-top:6px;color:#fef3c7">' +
+      escapeHtml(rateLimitIssues.map((item) => item.label || item.service || item.image).join(', ')) +
+    '</div></div>'
+  : '';
+
+function buildSnapshotToken(source) {
+  const snapshot = {
+    schema: 1,
+    createdAt: new Date().toISOString(),
+    baseUrl: source.baseUrl,
+    runUrl: source.runUrl,
+    tailscaleNote: source.tailscaleNote,
+    versionLookupError: source.versionLookupError || null,
+    updates: source.updates || [],
+    unknownUpdates: source.unknownUpdates || [],
+    inspectionIssues: source.inspectionIssues || [],
+    mappedCount: source.mappedCount || 0,
+    notifyCount: source.notifyCount || 0,
+  };
+  return Buffer.from(JSON.stringify(snapshot), 'utf8').toString('base64url');
+}
+
+function appendSnapshot(url, token) {
+  if (!url || !token) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'snapshot=' + encodeURIComponent(token);
+}
+
+let snapshotToken = '';
+try {
+  snapshotToken = buildSnapshotToken(data);
+  if (snapshotToken.length > 12000) {
+    snapshotToken = '';
+  }
+} catch {
+  snapshotToken = '';
+}
+
 const uiAccessLinks = Array.isArray(data.uiAccessLinks) ? data.uiAccessLinks : [];
 const uiActions = uiAccessLinks.length > 1
   ? '<div style="margin-top:24px;display:flex;flex-wrap:wrap;gap:12px">' +
       uiAccessLinks.map((link) =>
-        '<a href="' + escapeHtml(link.url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
+        '<a href="' + escapeHtml(appendSnapshot(link.url, snapshotToken)) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
       ).join('') +
     '</div>'
-  : '<div style="margin-top:24px"><a href="' + escapeHtml(uiAccessLinks[0]?.url || data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
+  : '<div style="margin-top:24px"><a href="' + escapeHtml(appendSnapshot(uiAccessLinks[0]?.url || data.uiUrl, snapshotToken)) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
   '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
@@ -986,9 +1090,18 @@ const cards = data.updates.map(renderCard).join('');
 const unknownCards = (data.unknownUpdates || []).map((item) =>
   '<div class="unknown"><code>' + escapeHtml(item.image) + '</code><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
-const issueCards = (data.inspectionIssues || []).map((item) =>
+const rateLimitIssues = (data.inspectionIssues || []).filter((item) => item.kind === 'registry_rate_limit');
+const metadataIssues = (data.inspectionIssues || []).filter((item) => item.kind !== 'registry_rate_limit');
+const issueCards = metadataIssues.map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
+const rateLimitNotice = rateLimitIssues.length
+  ? '<div class="issues"><h2>Docker Hub rate limit</h2><p>Metadata se nepodarilo nacist pro ' +
+      escapeHtml(String(rateLimitIssues.length)) +
+      ' sluzeb. Update flow muze pokracovat; detail verzi se doplni po uvolneni limitu nebo po Docker loginu na hostu.</p><div class="meta">' +
+      escapeHtml(rateLimitIssues.map((item) => item.label || item.service || item.image).join(', ')) +
+    '</div></div>'
+  : '';
 const webhookRequest = $('Webhook UI').first().json || {};
 const requestQuery = webhookRequest.query && typeof webhookRequest.query === 'object' && !Array.isArray(webhookRequest.query)
   ? webhookRequest.query
@@ -1011,6 +1124,8 @@ if (trustedOperator) {
   }
 } else if (requestedOperator && requestedOperator.token) {
   if (queryToken && queryToken === requestedOperator.token) {
+    currentOperator = requestedOperator;
+  } else if (!queryToken && META.operatorTokenInUiUrl === false && CONFIGURED_OPERATORS.length === 1) {
     currentOperator = requestedOperator;
   } else {
     authError = 'Neplatny operator token.';
@@ -1331,6 +1446,14 @@ const sshArguments = ['bash', META.sshScriptPath];
 if (dryRun) {
   sshArguments.push('--dry-run');
 }
+const composeFile = optionalString(META.composeFile);
+if (composeFile) {
+  sshArguments.push('--compose-file', composeFile);
+}
+const composeDir = optionalString(META.composeDir);
+if (composeDir) {
+  sshArguments.push('--compose-dir', composeDir);
+}
 if (META.auditLogPath) {
   sshArguments.push('--audit-log-path', META.auditLogPath);
 }
@@ -1374,6 +1497,8 @@ return [{
     operator,
     workflowExecutionId,
     auditLogPath: META.auditLogPath || null,
+    composeFile,
+    composeDir,
     precheckDiskUsageLimitPct,
     backupMarkerPath,
     backupMarkerMaxAgeSeconds: backupMarkerPath ? backupMarkerMaxAgeSeconds : null,
@@ -1638,17 +1763,58 @@ const mappedRows = data.updates.map(renderUpdateRow).join('');
 const unknownRows = (data.unknownUpdates || []).map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fca5a5"><code>' + escapeHtml(item.image) + '</code> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
-const issueRows = (data.inspectionIssues || []).map((item) =>
+const rateLimitIssues = (data.inspectionIssues || []).filter((item) => item.kind === 'registry_rate_limit');
+const metadataIssues = (data.inspectionIssues || []).filter((item) => item.kind !== 'registry_rate_limit');
+const issueRows = metadataIssues.map((item) =>
   '<li style="margin:0 0 8px 18px;color:#fde68a"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong> - ' + escapeHtml(item.reason) + '</li>'
 ).join('');
+const rateLimitNotice = rateLimitIssues.length
+  ? '<div style="margin-top:20px;padding:14px 16px;background:#422006;border:1px solid #92400e;border-radius:12px;color:#fde68a"><strong>Docker Hub rate limit:</strong> metadata se nepodarilo nacist pro ' +
+      escapeHtml(String(rateLimitIssues.length)) + ' sluzeb. Update flow muze pokracovat; detail verzi se doplni po uvolneni limitu nebo po Docker loginu na hostu.<div style="margin-top:6px;color:#fef3c7">' +
+      escapeHtml(rateLimitIssues.map((item) => item.label || item.service || item.image).join(', ')) +
+    '</div></div>'
+  : '';
+
+function buildSnapshotToken(source) {
+  const snapshot = {
+    schema: 1,
+    createdAt: new Date().toISOString(),
+    baseUrl: source.baseUrl,
+    runUrl: source.runUrl,
+    tailscaleNote: source.tailscaleNote,
+    versionLookupError: source.versionLookupError || null,
+    updates: source.updates || [],
+    unknownUpdates: source.unknownUpdates || [],
+    inspectionIssues: source.inspectionIssues || [],
+    mappedCount: source.mappedCount || 0,
+    notifyCount: source.notifyCount || 0,
+  };
+  return Buffer.from(JSON.stringify(snapshot), 'utf8').toString('base64url');
+}
+
+function appendSnapshot(url, token) {
+  if (!url || !token) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'snapshot=' + encodeURIComponent(token);
+}
+
+let snapshotToken = '';
+try {
+  snapshotToken = buildSnapshotToken(data);
+  if (snapshotToken.length > 12000) {
+    snapshotToken = '';
+  }
+} catch {
+  snapshotToken = '';
+}
+
 const uiAccessLinks = Array.isArray(data.uiAccessLinks) ? data.uiAccessLinks : [];
 const uiActions = uiAccessLinks.length > 1
   ? '<div style="margin-top:24px;display:flex;flex-wrap:wrap;gap:12px">' +
       uiAccessLinks.map((link) =>
-        '<a href="' + escapeHtml(link.url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
+        '<a href="' + escapeHtml(appendSnapshot(link.url, snapshotToken)) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit UI jako ' + escapeHtml(link.label) + '</a>'
       ).join('') +
     '</div>'
-  : '<div style="margin-top:24px"><a href="' + escapeHtml(uiAccessLinks[0]?.url || data.uiUrl) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
+  : '<div style="margin-top:24px"><a href="' + escapeHtml(appendSnapshot(uiAccessLinks[0]?.url || data.uiUrl, snapshotToken)) + '" style="display:inline-block;background:#2563eb;color:#ffffff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Otevrit update UI</a></div>';
 
 const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#e2e8f0;background:#0f172a;padding:24px;border-radius:16px">' +
   '<h2 style="margin:0 0 8px;color:#f8fafc">' + escapeHtml(${JSON.stringify(mailHeading)}) + '</h2>' +
@@ -1662,6 +1828,7 @@ const html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;
   (issueRows
     ? '<div style="margin-top:20px;padding:16px;background:#422006;border:1px solid #92400e;border-radius:12px"><h3 style="margin:0 0 8px;color:#fde68a">Kontrolni chyby</h3><ul style="padding:0;margin:0">' + issueRows + '</ul></div>'
     : '') +
+  rateLimitNotice +
   (unknownRows
     ? '<div style="margin-top:20px;padding:16px;background:#3f1d1d;border:1px solid #7f1d1d;border-radius:12px"><h3 style="margin:0 0 8px;color:#fecaca">Neznamy update - vyzaduje doplneni mapy</h3><ul style="padding:0;margin:0">' + unknownRows + '</ul></div>'
     : '') +
@@ -1673,9 +1840,16 @@ return [{ json: { ...data, subject: 'Docker updates - ' + data.notifyCount + ' p
 
 const uiRenderCode = `
 ${smallHelpers}
-const prepared = $('Enrich Updates').first().json;
-const aiPayload = readAiPayload($input.first().json);
-const data = { ...prepared, updates: mergeReviews(prepared, aiPayload) };
+const inputData = $input.first().json || {};
+let data;
+
+if (inputData.fromSnapshot) {
+  data = inputData;
+} else {
+  const prepared = $('Enrich Updates').first().json;
+  const aiPayload = readAiPayload(inputData);
+  data = { ...prepared, updates: mergeReviews(prepared, aiPayload) };
+}
 
 function renderCard(update) {
   const verdict = verdictUi(update.review?.verdict);
@@ -1709,9 +1883,18 @@ const cards = data.updates.map(renderCard).join('');
 const unknownCards = (data.unknownUpdates || []).map((item) =>
   '<div class="unknown"><code>' + escapeHtml(item.image) + '</code><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
-const issueCards = (data.inspectionIssues || []).map((item) =>
+const rateLimitIssues = (data.inspectionIssues || []).filter((item) => item.kind === 'registry_rate_limit');
+const metadataIssues = (data.inspectionIssues || []).filter((item) => item.kind !== 'registry_rate_limit');
+const issueCards = metadataIssues.map((item) =>
   '<div class="unknown"><strong>' + escapeHtml(item.label || item.service || item.image) + '</strong><div>' + escapeHtml(item.reason) + '</div></div>'
 ).join('');
+const rateLimitNotice = rateLimitIssues.length
+  ? '<div class="issues"><h2>Docker Hub rate limit</h2><p>Metadata se nepodarilo nacist pro ' +
+      escapeHtml(String(rateLimitIssues.length)) +
+      ' sluzeb. Update flow muze pokracovat; detail verzi se doplni po uvolneni limitu nebo po Docker loginu na hostu.</p><div class="meta">' +
+      escapeHtml(rateLimitIssues.map((item) => item.label || item.service || item.image).join(', ')) +
+    '</div></div>'
+  : '';
 const webhookRequest = $('Webhook UI').first().json || {};
 const requestQuery = webhookRequest.query && typeof webhookRequest.query === 'object' && !Array.isArray(webhookRequest.query)
   ? webhookRequest.query
@@ -1734,6 +1917,8 @@ if (trustedOperator) {
   }
 } else if (requestedOperator && requestedOperator.token) {
   if (queryToken && queryToken === requestedOperator.token) {
+    currentOperator = requestedOperator;
+  } else if (!queryToken && META.operatorTokenInUiUrl === false && CONFIGURED_OPERATORS.length === 1) {
     currentOperator = requestedOperator;
   } else {
     authError = 'Neplatny operator token.';
@@ -1795,6 +1980,7 @@ const html = '<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta n
       '</form>'
     : '<div class="empty">Zadne zastarale mapovane sluzby k bezpecnemu spusteni.</div>') +
   (issueCards ? '<div class="issues"><h2>Kontrolni chyby</h2>' + issueCards + '</div>' : '') +
+  rateLimitNotice +
   (unknownCards ? '<div class="unknowns"><h2>Unknown updates</h2>' + unknownCards + '</div>' : '') +
   '<div id="status"></div></div>' +
   '<script>' +
@@ -1872,6 +2058,14 @@ function phaseLabel(phase) {
   return labels[phase] || (phase || 'Neznama faze');
 }
 
+function resultOptionalString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function resultShellQuote(value) {
+  return "'" + String(value ?? '').replace(/'/g, "'\\\"'\\\"'") + "'";
+}
+
 function phaseExplanation(ok, dryRun, phase) {
   if (ok) {
     return dryRun
@@ -1934,6 +2128,15 @@ const message = ok
   ? actionLabel + ' dokoncen pro: ' + servicesText
   : actionLabel + ' selhal pro: ' + servicesText + (summary ? ' - ' + summary : '');
 
+const rollbackComposeFile = resultOptionalString(META.composeFile);
+const rollbackComposeDir =
+  resultOptionalString(META.composeDir) ||
+  (rollbackComposeFile && rollbackComposeFile.includes('/')
+    ? rollbackComposeFile.slice(0, rollbackComposeFile.lastIndexOf('/')) || '/'
+    : '/opt/docker');
+const rollbackComposeCommand = rollbackComposeFile
+  ? 'docker compose -f ' + resultShellQuote(rollbackComposeFile)
+  : 'docker compose';
 const rollbackPlans = phase === 'post_check'
   ? requestData.expandedServices
       .map((service) => {
@@ -1966,9 +2169,9 @@ const rollbackPlans = phase === 'post_check'
           kind: 'available',
           commands: [
             '# ' + label,
-            'docker image tag ' + previousDigest + ' ' + imageRef,
-            'docker compose up -d --no-deps ' + service,
-            'docker compose ps ' + service,
+            'docker image tag ' + resultShellQuote(previousDigest) + ' ' + resultShellQuote(imageRef),
+            rollbackComposeCommand + ' up -d --no-deps ' + resultShellQuote(service),
+            rollbackComposeCommand + ' ps ' + resultShellQuote(service),
           ].join('\\n'),
         };
       })
@@ -2007,7 +2210,7 @@ const floatingTagHtml = floatingTagWarning
 
 const rollbackHtml = rollbackCommandsText
   ? '<div style="margin:16px 0;padding:16px;background:#1f2937;color:#e5e7eb;border-radius:14px"><div style="font-size:18px;font-weight:700;margin-bottom:8px">Rollback runbook</div><div style="color:#cbd5e1;margin-bottom:10px">Pouzij jen pokud potvrdis, ze problem zpusobil novy image. Rollback neni automaticky.</div><pre style="white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:14px;border-radius:12px;margin:0">' +
-      escapeHtml('cd /opt/docker\\n\\n' + rollbackCommandsText) +
+      escapeHtml('cd ' + resultShellQuote(rollbackComposeDir) + '\\n\\n' + rollbackCommandsText) +
     '</pre><div style="margin-top:10px;color:#cbd5e1">Po navratu zkontroluj logy, health endpoint a pripadne DB migrace.</div></div>'
   : rollbackUnavailableNotes.length
     ? '<div style="margin:16px 0;padding:14px;background:#172554;color:#dbeafe;border-radius:14px"><div style="font-weight:700;margin-bottom:8px">Rollback z tohoto behu</div><div>' +
@@ -2371,11 +2574,39 @@ const uiWorkflow = {
       },
     },
     {
+      id: 'code-ui-snapshot',
+      name: 'Read Snapshot',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: [460, 300],
+      parameters: {
+        jsCode: uiSnapshotCode,
+      },
+    },
+    {
+      id: 'if-ui-snapshot',
+      name: 'Snapshot Available?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 1,
+      position: [680, 300],
+      parameters: {
+        conditions: {
+          boolean: [
+            {
+              value1: '={{ $json.useSnapshot }}',
+              operation: 'equal',
+              value2: true,
+            },
+          ],
+        },
+      },
+    },
+    {
       id: 'code-ui-1',
       name: 'Prepare Services',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: [460, 300],
+      position: [900, 420],
       parameters: {
         jsCode: checkerPrepareCode,
       },
@@ -2385,29 +2616,29 @@ const uiWorkflow = {
       name: 'Build Version Query',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: [680, 300],
+      position: [1120, 420],
       parameters: {
         jsCode: versionQueryCode,
       },
     },
-    sshNode('SSH Inspect Versions', 'ssh-ui-version', [900, 300], '={{ $json.inspectSshCommand }}'),
+    sshNode('SSH Inspect Versions', 'ssh-ui-version', [1340, 420], '={{ $json.inspectSshCommand }}'),
     {
       id: 'code-ui-version-2',
       name: 'Enrich Updates',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: [1120, 300],
+      position: [1560, 420],
       parameters: {
         jsCode: versionMergeCode,
       },
     },
-    openAiNode('OpenAI AI Review', 'openai-ui', [1340, 300]),
+    openAiNode('OpenAI AI Review', 'openai-ui', [1780, 420]),
     {
       id: 'code-ui-2',
       name: 'Build HTML',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: [1560, 300],
+      position: [2000, 300],
       parameters: {
         jsCode: uiRenderCode,
       },
@@ -2417,7 +2648,7 @@ const uiWorkflow = {
       name: 'Respond HTML',
       type: 'n8n-nodes-base.respondToWebhook',
       typeVersion: 1.4,
-      position: [1780, 300],
+      position: [2220, 300],
       parameters: {
         respondWith: 'text',
         responseBody: '={{ $json.html }}',
@@ -2436,7 +2667,16 @@ const uiWorkflow = {
   ],
   connections: {
     'Webhook UI': {
-      main: [[{ node: 'Prepare Services', type: 'main', index: 0 }]],
+      main: [[{ node: 'Read Snapshot', type: 'main', index: 0 }]],
+    },
+    'Read Snapshot': {
+      main: [[{ node: 'Snapshot Available?', type: 'main', index: 0 }]],
+    },
+    'Snapshot Available?': {
+      main: [
+        [{ node: 'Build HTML', type: 'main', index: 0 }],
+        [{ node: 'Prepare Services', type: 'main', index: 0 }],
+      ],
     },
     'Prepare Services': {
       main: [[{ node: 'Build Version Query', type: 'main', index: 0 }]],

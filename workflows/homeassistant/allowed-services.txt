@@ -1,0 +1,13 @@
+backrest
+diun
+esphome
+grafana
+hass-configurator
+homeassistant
+influxdb
+mosquitto
+nodered
+portainer
+scrutiny-collector
+tasmoadmin
+zigbee2mqtt

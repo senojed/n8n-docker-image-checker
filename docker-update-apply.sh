@@ -2,14 +2,14 @@
 set -euo pipefail
 
 COMPOSE_DIR="/opt/docker"
+COMPOSE_FILE=""
+compose_dir_explicit=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_FILE="${SCRIPT_DIR}/allowed-services.txt"
 DEFAULT_AUDIT_LOG_PATH="/var/log/docker-updates/audit.jsonl"
 DEFAULT_PRECHECK_DISK_USAGE_LIMIT_PCT=85
 DEFAULT_BACKUP_MARKER_MAX_AGE_SECONDS=604800
-DEFAULT_BACKUP_SNAPSHOT_ROOT="${COMPOSE_DIR}/.backups"
 DEFAULT_BACKUP_RETENTION_RUNS=30
-LOCK_FILE_PATH="${COMPOSE_DIR}/.docker-update-apply.lock"
 
 dry_run=0
 operator=""
@@ -30,6 +30,30 @@ declare -A allowed=()
 declare -A compose_services=()
 declare -A prev_digests=()
 declare -A new_digests=()
+
+compose_cmd() {
+  if [[ -n "${COMPOSE_FILE}" ]]; then
+    docker compose -f "${COMPOSE_FILE}" "$@"
+  else
+    docker compose "$@"
+  fi
+}
+
+compose_display_path() {
+  if [[ -n "${COMPOSE_FILE}" ]]; then
+    printf '%s\n' "${COMPOSE_FILE}"
+  else
+    printf '%s\n' "${COMPOSE_DIR}"
+  fi
+}
+
+backup_snapshot_root() {
+  printf '%s/.backups\n' "${COMPOSE_DIR}"
+}
+
+lock_file_path() {
+  printf '%s/.docker-update-apply.lock\n' "${COMPOSE_DIR}"
+}
 
 array_payload() {
   local -n values_ref=$1
@@ -228,17 +252,20 @@ cleanup() {
 trap cleanup EXIT
 
 acquire_execution_lock() {
+  local lock_file
+
   current_phase="lock"
+  lock_file="$(lock_file_path)"
 
   if ! command -v flock >/dev/null 2>&1; then
     finish_error "lock" 8 "flock is not available on host"
   fi
 
-  if ! touch "${LOCK_FILE_PATH}"; then
-    finish_error "lock" 8 "lock file is not writable at ${LOCK_FILE_PATH}"
+  if ! touch "${lock_file}"; then
+    finish_error "lock" 8 "lock file is not writable at ${lock_file}"
   fi
 
-  exec 9<>"${LOCK_FILE_PATH}"
+  exec 9<>"${lock_file}"
   if ! flock -n 9; then
     finish_error "lock" 8 "another update in progress"
   fi
@@ -276,7 +303,7 @@ run_disk_precheck() {
 }
 
 run_compose_precheck() {
-  if ! docker compose config -q >/dev/null 2>&1; then
+  if ! compose_cmd config -q >/dev/null 2>&1; then
     finish_error "precheck_compose" 12 "docker compose config -q failed"
   fi
 }
@@ -337,7 +364,7 @@ prune_backup_snapshots() {
 create_backup_snapshot() {
   local backup_root_dir snapshot_stamp snapshot_suffix effective_marker_path
 
-  backup_root_dir="${DEFAULT_BACKUP_SNAPSHOT_ROOT}"
+  backup_root_dir="$(backup_snapshot_root)"
   snapshot_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   snapshot_suffix="${workflow_execution_id:-$$}"
   backup_snapshot_dir="${backup_root_dir}/${snapshot_stamp}"
@@ -356,6 +383,12 @@ create_backup_snapshot() {
     finish_error "backup_snapshot" 15 "failed to create backup marker directory at $(dirname "${effective_marker_path}")"
   fi
 
+  if [[ -n "${COMPOSE_FILE}" ]]; then
+    if ! cp -p "${COMPOSE_FILE}" "${backup_snapshot_dir}/$(basename "${COMPOSE_FILE}")"; then
+      finish_error "backup_snapshot" 15 "failed to copy ${COMPOSE_FILE} into ${backup_snapshot_dir}"
+    fi
+  fi
+
   for compose_candidate in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
     if [[ -f "${compose_candidate}" ]]; then
       if ! cp -p "${compose_candidate}" "${backup_snapshot_dir}/${compose_candidate}"; then
@@ -364,7 +397,7 @@ create_backup_snapshot() {
     fi
   done
 
-  if ! docker compose config > "${backup_snapshot_dir}/docker-compose.rendered.yml"; then
+  if ! compose_cmd config > "${backup_snapshot_dir}/docker-compose.rendered.yml"; then
     finish_error "backup_snapshot" 15 "docker compose config failed while creating backup snapshot"
   fi
 
@@ -453,6 +486,7 @@ run_post_checks() {
     SERVICES_PAYLOAD="$(array_payload services)" \
     HEALTH_CHECKS_PAYLOAD_BASE64="${health_checks_payload_base64}" \
     COMPOSE_DIR="${COMPOSE_DIR}" \
+    COMPOSE_FILE="${COMPOSE_FILE}" \
     python3 - <<'PY'
 import base64
 import json
@@ -479,9 +513,13 @@ def clamp_positive_int(value, fallback):
     return parsed if parsed > 0 else fallback
 
 
-def docker_status(compose_dir, service):
+def docker_status(compose_dir, compose_file, service):
+    command = ["docker", "compose"]
+    if compose_file:
+        command.extend(["-f", compose_file])
+    command.extend(["ps", "-q", service])
     container_id = subprocess.run(
-        ["docker", "compose", "ps", "-q", service],
+        command,
         cwd=compose_dir,
         capture_output=True,
         text=True,
@@ -504,7 +542,7 @@ def docker_status(compose_dir, service):
     return status, None
 
 
-def poll_docker(service, config, compose_dir):
+def poll_docker(service, config, compose_dir, compose_file):
     timeout = clamp_positive_int(config.get("timeoutSeconds"), 60)
     interval = clamp_positive_int(config.get("intervalSeconds"), 5)
     deadline = time.time() + timeout
@@ -513,7 +551,7 @@ def poll_docker(service, config, compose_dir):
 
     while time.time() <= deadline:
         try:
-            status, error = docker_status(compose_dir, service)
+            status, error = docker_status(compose_dir, compose_file, service)
         except Exception as exc:
             status, error = None, str(exc)
 
@@ -608,6 +646,7 @@ def poll_http(service, config):
 services = lines("SERVICES_PAYLOAD")
 payload = json.loads(base64.b64decode(os.environ["HEALTH_CHECKS_PAYLOAD_BASE64"]).decode("utf-8"))
 compose_dir = os.environ["COMPOSE_DIR"]
+compose_file = os.environ.get("COMPOSE_FILE") or ""
 details = []
 
 for service in services:
@@ -623,7 +662,7 @@ for service in services:
         continue
 
     if check_type == "docker":
-        details.append(poll_docker(service, config, compose_dir))
+        details.append(poll_docker(service, config, compose_dir, compose_file))
         continue
 
     if check_type == "http":
@@ -687,7 +726,7 @@ capture_container_digests() {
 
   for service in "${services[@]}"; do
     local container_id image_digest
-    container_id="$(docker compose ps -q "$service" 2>/dev/null || true)"
+    container_id="$(compose_cmd ps -q "$service" 2>/dev/null || true)"
     if [[ -z "${container_id}" ]]; then
       continue
     fi
@@ -723,6 +762,21 @@ while [[ $# -gt 0 ]]; do
         finish_error "bootstrap" 1 "missing value for --audit-log-path"
       fi
       audit_log_path="$2"
+      shift 2
+      ;;
+    --compose-dir)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --compose-dir"
+      fi
+      COMPOSE_DIR="$2"
+      compose_dir_explicit=1
+      shift 2
+      ;;
+    --compose-file)
+      if [[ $# -lt 2 ]]; then
+        finish_error "bootstrap" 1 "missing value for --compose-file"
+      fi
+      COMPOSE_FILE="$2"
       shift 2
       ;;
     --disk-usage-limit-pct)
@@ -776,6 +830,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "${COMPOSE_FILE}" && "${compose_dir_explicit}" -eq 0 ]]; then
+  COMPOSE_DIR="$(cd "$(dirname "${COMPOSE_FILE}")" && pwd)"
+fi
+
 current_phase="allowlist"
 if [[ ${#services[@]} -lt 1 ]]; then
   finish_error "allowlist" 2 "no services requested"
@@ -806,7 +864,11 @@ fi
 
 cd "${COMPOSE_DIR}"
 
-if [[ ! -f docker-compose.yml && ! -f compose.yml ]]; then
+if [[ -n "${COMPOSE_FILE}" ]]; then
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    finish_error "compose_config" 6 "compose file not found at ${COMPOSE_FILE}"
+  fi
+elif [[ ! -f docker-compose.yml && ! -f docker-compose.yaml && ! -f compose.yml && ! -f compose.yaml ]]; then
   finish_error "compose_config" 6 "no compose file found in ${COMPOSE_DIR}"
 fi
 
@@ -816,7 +878,7 @@ run_disk_precheck
 current_phase="precheck_compose"
 run_compose_precheck
 
-compose_service_list="$(docker compose config --services 2>&1)" || finish_error "compose_config" 7 "docker compose config --services failed"
+compose_service_list="$(compose_cmd config --services 2>&1)" || finish_error "compose_config" 7 "docker compose config --services failed"
 while IFS= read -r service; do
   [[ -z "${service}" ]] && continue
   compose_services["${service}"]=1
@@ -841,7 +903,7 @@ if [[ ${dry_run} -eq 1 ]]; then
   echo
   echo "Validated allowlist and compose service presence."
   echo
-  docker compose ps "${services[@]}" || true
+  compose_cmd ps "${services[@]}" || true
   echo
   finish_success "dry_run" "dry-run completed"
 fi
@@ -855,20 +917,20 @@ echo "Operator: ${operator:-unknown}"
 echo
 
 current_phase="pull"
-if ! docker compose pull "${services[@]}"; then
+if ! compose_cmd pull "${services[@]}"; then
   finish_error "pull" 8 "docker compose pull failed"
 fi
 
 echo
 current_phase="up"
-if ! docker compose up -d --no-deps "${services[@]}"; then
+if ! compose_cmd up -d --no-deps "${services[@]}"; then
   finish_error "up" 9 "docker compose up failed"
 fi
 
 capture_container_digests new_digests
 
 echo
-docker compose ps "${services[@]}"
+compose_cmd ps "${services[@]}"
 echo
 
 current_phase="post_check"

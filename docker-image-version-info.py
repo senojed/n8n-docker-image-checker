@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import platform
 import re
 import subprocess
@@ -34,7 +35,26 @@ FLOATING_TAGS = {
     "edge",
 }
 
-CACHE_FILE = Path("/opt/docker/docker-image-version-info-cache.json")
+
+def default_cache_file():
+    env_path = os.environ.get("DOCKER_IMAGE_VERSION_INFO_CACHE")
+    if env_path:
+        return Path(env_path)
+
+    candidates = [
+        Path(__file__).resolve().parent / "docker-image-version-info-cache.json",
+        Path("/opt/docker/docker-image-version-info-cache.json"),
+        Path("/tmp/docker-image-version-info-cache.json"),
+    ]
+    for candidate in candidates:
+        parent = candidate.parent
+        if parent.exists() and os.access(parent, os.W_OK):
+            return candidate
+
+    return Path("/tmp/docker-image-version-info-cache.json")
+
+
+CACHE_FILE = default_cache_file()
 CACHE_TTL_SECONDS = 6 * 60 * 60
 
 
@@ -43,6 +63,13 @@ def run_command(args):
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout or "command failed").strip())
     return completed.stdout
+
+
+def try_run_command(args):
+    completed = subprocess.run(args, capture_output=True, text=True)
+    if completed.returncode != 0:
+        return None
+    return ((completed.stdout or "") + (completed.stderr or "")).strip()
 
 
 def load_cache():
@@ -115,6 +142,8 @@ def fetch_json(url):
 def short_digest(value):
     if not value:
         return None
+    if "@" in value:
+        value = value.rsplit("@", 1)[1]
     if value.startswith("sha256:"):
         value = value[7:]
     return value[:12]
@@ -210,6 +239,103 @@ def pick_version(labels, env_map, image_ref):
     return version_from_tag(image_ref)
 
 
+def image_repo_digest_for_ref(image_ref, running_image_id):
+    if not image_ref or "@" in image_ref or not running_image_id:
+        return None
+
+    raw = try_run_command(["docker", "image", "inspect", image_ref])
+    if not raw:
+        return None
+
+    try:
+        image_data = json.loads(raw)[0]
+    except Exception:
+        return None
+
+    if image_data.get("Id") != running_image_id:
+        return None
+
+    repo_digests = image_data.get("RepoDigests") or []
+    if not repo_digests:
+        return None
+
+    normalized_image = image_ref.rsplit(":", 1)[0] if ":" in image_ref.rsplit("/", 1)[-1] else image_ref
+    for repo_digest in repo_digests:
+        if repo_digest.startswith(f"{normalized_image}@"):
+            return repo_digest.rsplit("@", 1)[1]
+
+    return repo_digests[0].rsplit("@", 1)[1] if "@" in repo_digests[0] else repo_digests[0]
+
+
+def parse_first_version(text):
+    match = re.search(r"v?([0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9_.-]+)?)", text or "")
+    return match.group(1) if match else None
+
+
+def runtime_version(container_id, image_ref):
+    image = (image_ref or "").lower()
+    probes = []
+
+    if "grafana/" in image:
+        probes.append((["docker", "exec", container_id, "grafana", "cli", "--version"], "runtime:grafana-cli"))
+    elif "portainer/" in image:
+        probes.append((["docker", "exec", container_id, "/portainer", "--version"], "runtime:portainer"))
+    elif image.startswith("influxdb") or "/influxdb" in image:
+        probes.append((["docker", "exec", container_id, "influxd", "version"], "runtime:influxd"))
+        probes.append((["docker", "exec", container_id, "influx", "version"], "runtime:influx"))
+    elif "backrest" in image:
+        probes.append((["docker", "exec", container_id, "/app/backrest", "--version"], "runtime:backrest"))
+        probes.append((["docker", "exec", container_id, "backrest", "--version"], "runtime:backrest"))
+    elif "hass-configurator" in image:
+        probes.append((["docker", "exec", container_id, "python3", "-m", "pip", "show", "hass-configurator"], "runtime:pip"))
+
+    for command, source in probes:
+        output = try_run_command(command)
+        version = parse_first_version(output or "")
+        if version:
+            return version, source
+
+    return None, None
+
+
+def inspect_local_target(image_ref):
+    raw = try_run_command(["docker", "image", "inspect", image_ref])
+    if not raw:
+        return None
+
+    try:
+        image_data = json.loads(raw)[0]
+    except Exception:
+        return None
+
+    config = image_data.get("Config") or {}
+    labels = config.get("Labels") or {}
+    env_map = env_to_dict(config.get("Env") or [])
+    version, version_source = pick_version(labels, env_map, image_ref)
+    repo_digests = image_data.get("RepoDigests") or []
+    digest = None
+
+    normalized_image = image_ref.rsplit(":", 1)[0] if ":" in image_ref.rsplit("/", 1)[-1] else image_ref
+    for repo_digest in repo_digests:
+        if repo_digest.startswith(f"{normalized_image}@"):
+            digest = repo_digest.rsplit("@", 1)[1]
+            break
+    if not digest and repo_digests:
+        digest = repo_digests[0].rsplit("@", 1)[1] if "@" in repo_digests[0] else repo_digests[0]
+
+    if not digest:
+        digest = image_data.get("Id")
+
+    return {
+        "targetVersion": version,
+        "targetVersionSource": version_source,
+        "targetDigest": digest,
+        "targetDigestShort": short_digest(digest),
+        "targetDigestSource": "local-image",
+        "note": "Registry metadata nejsou dostupna, pouzita metadata lokalne stazeneho tagu.",
+    }
+
+
 def platform_key():
     machine = platform.machine().lower()
     arch_map = {
@@ -264,7 +390,11 @@ def inspect_current(service):
     env_map = env_to_dict(((data.get("Config") or {}).get("Env")) or [])
     image_ref = (data.get("Config") or {}).get("Image")
     version, version_source = pick_version(labels, env_map, image_ref)
-    digest = labels.get("com.docker.compose.image") or data.get("Image")
+    if not version:
+        version, version_source = runtime_version(container_id, image_ref)
+
+    running_image_id = data.get("Image")
+    digest = image_repo_digest_for_ref(image_ref, running_image_id) or labels.get("com.docker.compose.image") or running_image_id
 
     return {
         "currentVersion": version,
@@ -313,6 +443,7 @@ def inspect_target(image_ref, cache, current_info=None):
         "targetVersionSource": version_source,
         "targetDigest": digest,
         "targetDigestShort": short_digest(digest),
+        "targetDigestSource": "registry",
     }
     cache[image_ref] = {
         "fetchedAt": time.time(),
@@ -356,6 +487,9 @@ def build_note(current_info, target_info):
     target_digest = target_info.get("targetDigest")
     current_version = comparable_version(current_info.get("currentVersion"))
     target_version = comparable_version(target_info.get("targetVersion"))
+
+    if target_info.get("targetDigestSource") == "local-image" and current_digest and target_digest and current_digest == target_digest:
+        return target_info.get("note")
 
     if current_digest and target_digest and current_digest == target_digest:
         return "Remote digest uz odpovida aktualnimu image."
@@ -418,7 +552,11 @@ def main():
                         target_info = dict(cached_target)
                         target_info["note"] = cache_age_note(cache, image_ref)
                     else:
-                        raise
+                        local_target = inspect_local_target(image_ref)
+                        if local_target:
+                            target_info = local_target
+                        else:
+                            raise
                 else:
                     raise
             if not target_info.get("targetVersion") and release_url:
@@ -427,10 +565,18 @@ def main():
                     target_info.update(release_fallback)
             result.update(current_info)
             result.update(target_info)
+            local_target_digest = target_info.get("targetDigestSource") == "local-image"
+            current_version = comparable_version(result.get("currentVersion"))
+            target_version = comparable_version(result.get("targetVersion"))
             result["isAlreadyCurrent"] = bool(
                 result.get("currentDigest")
                 and result.get("targetDigest")
                 and result["currentDigest"] == result["targetDigest"]
+                and (
+                    not local_target_digest
+                    or not target_version
+                    or (current_version and current_version == target_version)
+                )
             )
             result["note"] = build_note(current_info, target_info) or target_info.get("note") or current_info.get("note")
         except Exception as exc:
