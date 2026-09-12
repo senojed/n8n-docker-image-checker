@@ -5,7 +5,7 @@
 - Existujici n8n na dataserveru zustane centralni "mozek" automatizace.
 - Dataserver a Homeassistant budou mit samostatne trojice workflowu.
 - Soucasna sada `Hardening Test` se pouze prejmenuje na `Dataserver`, bez zmeny funkce.
-- Homeassistant dostane novou sadu workflowu cilenou na `jan@192.168.0.99`.
+- Homeassistant dostane novou sadu workflowu cilenou na `jan@<homeassistant-ip>`.
 
 ## Key Changes
 
@@ -16,14 +16,14 @@
 - Rozsirit `docker-update-apply.sh` zpetne kompatibilne:
   - default bez parametru dal pouziva dataserver `/opt/docker`
   - novy HA beh pouzije `--compose-file /opt/docker-compose.yaml`
-- Pridat HA profil, napr. `service-map.homeassistant.json`, se samostatnymi workflow nazvy, webhook path tokeny, SSH cilem `192.168.0.99` a host cestami pod `/opt/docker-updates`.
+- Pridat HA profil, napr. `service-map.homeassistant.json`, se samostatnymi workflow nazvy, webhook path tokeny, SSH cilem `<homeassistant-ip>` a host cestami pod `/opt/docker-updates`.
 - Sluzby pro HA profil odvodit z realneho `docker compose -f /opt/docker-compose.yaml config`, ne z rucniho seznamu.
 - Kriticke HA sluzby jako Home Assistant, InfluxDB a Node-RED oznacit konzervativne a nepredvybirat je v UI.
 
 ## Deployment Flow
 
 - Read-only SSH kontrola HA serveru:
-  - overit `jan@192.168.0.99`
+  - overit `jan@<homeassistant-ip>`
   - precist compose services a image refs z `/opt/docker-compose.yaml`
   - overit dostupnost Docker Compose
 - Pripravit HA service mapu a allowlist podle realneho compose.
@@ -54,7 +54,7 @@
 
 ## Assumptions
 
-- SSH user je `jan` a key auth na `192.168.0.99` funguje.
+- SSH user je `jan` a key auth na `<homeassistant-ip>` funguje.
 - n8n zustava na dataserveru.
 - Homeassistant compose file je `/opt/docker-compose.yaml`.
 - Dataserver workflow logika se nemeni; meni se jen jejich zobrazovany nazev.
@@ -62,7 +62,7 @@
 
 ## Rollout status 2026-05-03
 
-- HA server overen pres SSH jako `jan@192.168.0.99`, hostname `linux-server`.
+- HA server overen pres SSH jako `jan@<homeassistant-ip>`, hostname `linux-server`.
 - Compose file `/opt/docker-compose.yaml` existuje a obsahuje 13 sluzeb.
 - Host artefakty jsou nasazene na HA serveru v `/opt/docker-updates`.
 - Audit log je pripraveny v `/var/log/docker-updates/audit.jsonl`.
