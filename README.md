@@ -1,9 +1,10 @@
-# Docker Updates - Codex Variant
+# Docker Update Automation for n8n
 
-Tahle slozka obsahuje oddelenou, bezpecnejsi variantu Docker update automatizace pro n8n. Puvodni Claude Code rozpracovani zustava vedle jako reference a neni timhle dotcene.
+*n8n workflow that checks self-hosted Docker Compose services for available image updates and applies them through a safety-gated approval flow (allowlist, dry-run, audit log, health checks).*
 
-Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-test.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/README.hardening-test.md:1).
-Aktualni smer projektu je `hardened-only`; puvodni legacy `Codex` workflowy jsou uz jen legacy reference.
+Automatizace kontroly a aktualizace Docker image verzi pro domaci server pres n8n.
+
+Aktualni stav hardening test varianty je prubezne vedeny v [README.hardening-test.md](README.hardening-test.md).
 
 ## Co tato varianta dela
 
@@ -15,7 +16,7 @@ Aktualni smer projektu je `hardened-only`; puvodni legacy `Codex` workflowy jsou
 6. Po potvrzeni se update spousti pres host skript na serveru, ne pres libovolny shell z webu.
 7. Po dokonceni prijde vysledek zpet do UI a po realnem updatu i mailem.
 
-## Proc je to bezpecnejsi
+## Bezpecnostni opatreni
 
 - n8n nepousti `docker compose` primo z verejneho webhooku.
 - Update muze spustit jen allowlist sluzeb z `workflows/legacy/allowed-services.txt`.
@@ -347,9 +348,9 @@ logrotate -d /etc/logrotate.d/docker-updates-audit
 
 Pro `2.5 SSH hardening` je v repu i referencni host slozka:
 
-- [host/README.md](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/README.md:1)
-- [host/authorized_keys.example](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/authorized_keys.example:1)
-- [host/docker-updater.service](C:/Users/Honza/Nextcloud/Jan/PROJECTS/docker-image-checker-n8n/host/docker-updater.service:1)
+- [host/README.md](host/README.md)
+- [host/authorized_keys.example](host/authorized_keys.example)
+- [host/docker-updater.service](host/docker-updater.service)
 
 Dalsi kroky:
 
